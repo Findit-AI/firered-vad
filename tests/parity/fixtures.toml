@@ -1,0 +1,33 @@
+# Fixtures for the parity harness. Paths are relative to either an
+# absolute path (preferred for external fixture sets) or to the crate
+# root.
+#
+# Add or remove entries to control which WAVs are exercised.
+
+[[fixtures]]
+name = "02_pyannote_sample"
+wav  = "/Users/user/Develop/findit-studio/dia/tests/parity/fixtures/02_pyannote_sample/clip_16k.wav"
+
+[[fixtures]]
+name = "03_dual_speaker"
+wav  = "/Users/user/Develop/findit-studio/dia/tests/parity/fixtures/03_dual_speaker/clip_16k.wav"
+
+[[fixtures]]
+name = "04_three_speaker"
+wav  = "/Users/user/Develop/findit-studio/dia/tests/parity/fixtures/04_three_speaker/clip_16k.wav"
+
+[[fixtures]]
+name = "05_four_speaker"
+wav  = "/Users/user/Develop/findit-studio/dia/tests/parity/fixtures/05_four_speaker/clip_16k.wav"
+
+[[fixtures]]
+name = "07_yuhewei_dongbei_english"
+wav  = "/Users/user/Develop/findit-studio/testaudioset/wav/07_yuhewei_dongbei_english.wav"
+
+[[fixtures]]
+name = "10_mrbeast_clean_water"
+wav  = "/Users/user/Develop/findit-studio/dia/tests/parity/fixtures/10_mrbeast_clean_water/clip_16k.wav"
+
+[[fixtures]]
+name = "06_long_recording"
+wav  = "/Users/user/Develop/findit-studio/dia/tests/parity/fixtures/06_long_recording/clip_16k.wav"

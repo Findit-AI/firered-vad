@@ -7,6 +7,8 @@ Cargo.lock
 tests/parity/out/
 tests/parity/python/.venv/
 tests/parity/python/uv.lock
+tests/parity/rust/target/
+tests/parity/rust/Cargo.lock
 *.pyc
 __pycache__/
 

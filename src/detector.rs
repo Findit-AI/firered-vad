@@ -141,7 +141,11 @@ impl Postprocessor {
 
     let mut is_speech_start = false;
     let mut is_speech_end = false;
-    let mut start_frame: Option<u64> = self.last_speech_start_frame;
+    // Per upstream Python: `speech_start_frame` and `speech_end_frame`
+    // default to `-1` (None) for every frame and are only assigned in
+    // the specific state-machine arms that actually open/close/force-split
+    // a segment. Matching that semantics here: default both to None.
+    let mut start_frame: Option<u64> = None;
     let mut end_frame: Option<u64> = None;
 
     // hit_max_speech re-arms a fresh segment-start on this frame.
