@@ -13,6 +13,7 @@
 mod error;
 mod event;
 mod features;
+mod inference;
 mod options;
 
 pub use error::{Error, Result};
