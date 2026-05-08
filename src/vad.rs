@@ -5,7 +5,7 @@ use std::{collections::VecDeque, path::Path};
 use crate::{
   detector::Postprocessor,
   error::Result,
-  event::SpeechSegment,
+  event::{FrameResult, SpeechSegment},
   features::{FeatureExtractor, NUM_MEL_BINS},
   inference::OrtRunner,
   options::VadOptions,
@@ -37,6 +37,10 @@ pub struct Vad {
   detector: Postprocessor,
   pending_segments: VecDeque<SpeechSegment>,
   feature_scratch: Vec<f32>,
+  /// Per-frame snapshots produced by the most recent non-empty
+  /// `push_samples` call, in order. Cleared at the start of each
+  /// non-empty push and on `reset()`.
+  recent_frames: Vec<FrameResult>,
   finished: bool,
 }
 
@@ -127,6 +131,7 @@ impl Vad {
       detector,
       pending_segments: VecDeque::new(),
       feature_scratch: vec![0.0; NUM_MEL_BINS],
+      recent_frames: Vec::new(),
       finished: false,
     })
   }
@@ -141,6 +146,7 @@ impl Vad {
   /// closes more than one segment (rare but possible at force-split).
   pub fn push_samples(&mut self, pcm: &[f32]) -> Result<Option<SpeechSegment>> {
     if !pcm.is_empty() {
+      self.recent_frames.clear();
       self.features.push_pcm(pcm);
       while self.features.has_full_window() {
         self.features.extract_one(&mut self.feature_scratch);
@@ -149,8 +155,10 @@ impl Vad {
       if self.runner.pending_feature_frames() > 0 {
         let probs: Vec<f32> = self.runner.infer()?.to_vec();
         for prob in probs {
-          if let Some(segment) = self.detector.push_probability(prob) {
-            self.pending_segments.push_back(segment);
+          let (frame_result, segment) = self.detector.push_probability(prob);
+          self.recent_frames.push(frame_result);
+          if let Some(s) = segment {
+            self.pending_segments.push_back(s);
           }
         }
       }
@@ -178,6 +186,7 @@ impl Vad {
     self.features.reset();
     self.detector.reset();
     self.pending_segments.clear();
+    self.recent_frames.clear();
     self.finished = false;
   }
 
@@ -223,6 +232,24 @@ impl Vad {
   /// Number of buffered segments awaiting drain via `push_samples(&[])`.
   pub fn pending_segments(&self) -> usize {
     self.pending_segments.len()
+  }
+
+  /// Per-frame snapshots produced by the most recent non-empty
+  /// `push_samples` call, in order.
+  ///
+  /// One [`FrameResult`] per 10 ms frame consumed by that push. Each
+  /// carries `raw_prob`, `smoothed_prob`, `is_speech`, and the
+  /// boundary flags / latest-segment-frame indices the postprocessor
+  /// computed for that frame. Empty after `reset()`, after `finish()`
+  /// (which produces no new frames), and after any `push_samples(&[])`
+  /// drain call.
+  ///
+  /// This is inspection-only and never required for the segment-emit
+  /// happy path. Useful for UI/diagnostics, parity testing against the
+  /// upstream Python reference, and any custom postprocessing that
+  /// needs the per-frame probability stream.
+  pub fn recent_frames(&self) -> &[FrameResult] {
+    &self.recent_frames
   }
 }
 
@@ -274,5 +301,47 @@ mod tests {
       segments += 1;
     }
     assert_eq!(segments, 0);
+  }
+
+  #[cfg(feature = "bundled")]
+  #[test]
+  fn recent_frames_captures_one_frameresult_per_10ms_frame() {
+    let mut vad = Vad::bundled().expect("bundled");
+    // 25 ms (400 samples) for the FIRST frame; +10 ms (160) per subsequent.
+    // 5*160 + 240 = 1040 samples → 5 frames.
+    vad.push_samples(&vec![0.0; 1040]).expect("push samples");
+    let frames = vad.recent_frames();
+    assert_eq!(frames.len(), 5);
+    for (i, frame) in frames.iter().enumerate() {
+      assert_eq!(frame.frame_index(), i as u64);
+      assert!(frame.raw_prob() >= 0.0 && frame.raw_prob() <= 1.0);
+      assert!(frame.smoothed_prob() >= 0.0 && frame.smoothed_prob() <= 1.0);
+    }
+  }
+
+  #[cfg(feature = "bundled")]
+  #[test]
+  fn recent_frames_is_cleared_at_each_non_empty_push() {
+    let mut vad = Vad::bundled().expect("bundled");
+    vad.push_samples(&vec![0.0; 1040]).expect("push 1");
+    let count_after_first = vad.recent_frames().len();
+    assert!(count_after_first > 0);
+    vad.push_samples(&vec![0.0; 320]).expect("push 2"); // 2 more frames
+    assert_eq!(vad.recent_frames().len(), 2);
+  }
+
+  #[cfg(feature = "bundled")]
+  #[test]
+  fn recent_frames_is_empty_after_reset_and_after_drain_calls() {
+    let mut vad = Vad::bundled().expect("bundled");
+    vad.push_samples(&vec![0.0; 1040]).expect("push");
+    assert!(!vad.recent_frames().is_empty());
+    vad.reset();
+    assert!(vad.recent_frames().is_empty());
+
+    vad.push_samples(&vec![0.0; 1040]).expect("push");
+    assert!(!vad.recent_frames().is_empty());
+    let _ = vad.push_samples(&[]).expect("drain"); // empty push should NOT clear
+    assert!(!vad.recent_frames().is_empty(), "drain calls preserve recent_frames");
   }
 }

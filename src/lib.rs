@@ -13,7 +13,7 @@ mod options;
 mod vad;
 
 pub use error::{Error, Result};
-pub use event::SpeechSegment;
+pub use event::{FrameResult, SpeechSegment};
 pub use options::{GraphOptimizationLevel, SessionOptions, VadOptions};
 pub use vad::Vad;
 #[cfg(feature = "bundled")]

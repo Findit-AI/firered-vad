@@ -7,7 +7,10 @@
 
 use std::collections::VecDeque;
 
-use crate::{event::SpeechSegment, options::VadOptions};
+use crate::{
+  event::{FrameResult, SpeechSegment},
+  options::VadOptions,
+};
 
 /// Frame shift in samples (160 at 16 kHz, i.e. 10 ms).
 const FRAME_SHIFT_SAMPLES: u32 = 160;
@@ -126,19 +129,24 @@ impl Postprocessor {
 }
 
 impl Postprocessor {
-  /// Push one raw frame probability. Returns `Some(SpeechSegment)` if this
-  /// frame closed a segment, otherwise `None`.
-  pub(crate) fn push_probability(&mut self, raw_prob: f32) -> Option<SpeechSegment> {
+  /// Push one raw frame probability. Returns the per-frame state (always)
+  /// plus `Some(SpeechSegment)` if this frame closed a segment.
+  pub(crate) fn push_probability(
+    &mut self,
+    raw_prob: f32,
+  ) -> (FrameResult, Option<SpeechSegment>) {
     self.frame_cnt_1based += 1;
     let smoothed = self.smooth(raw_prob);
     let is_speech = smoothed >= self.options.speech_threshold();
 
+    let mut is_speech_start = false;
     let mut is_speech_end = false;
     let mut start_frame: Option<u64> = self.last_speech_start_frame;
     let mut end_frame: Option<u64> = None;
 
     // hit_max_speech re-arms a fresh segment-start on this frame.
     if self.hit_max_speech {
+      is_speech_start = true;
       let new_start = self.frame_cnt_1based.saturating_sub(1); // 0-based current frame
       self.last_speech_start_frame = Some(new_start);
       start_frame = Some(new_start);
@@ -162,6 +170,7 @@ impl Postprocessor {
           self.speech_cnt += 1;
           if self.speech_cnt >= self.options.min_speech_frames() {
             self.state = VadState::Speech;
+            is_speech_start = true;
             let new_start = self.padded_speech_start();
             self.last_speech_start_frame = Some(new_start);
             start_frame = Some(new_start);
@@ -228,15 +237,31 @@ impl Postprocessor {
       }
     }
 
-    if is_speech_end {
-      if let (Some(start), Some(end)) = (start_frame, end_frame) {
-        return Some(SpeechSegment::new(
+    let frame_index_0based = self.frame_cnt_1based - 1;
+    let frame_result = FrameResult::new(
+      frame_index_0based,
+      raw_prob,
+      smoothed,
+      is_speech,
+      is_speech_start,
+      is_speech_end,
+      start_frame,
+      end_frame,
+    );
+
+    let segment = if is_speech_end {
+      match (start_frame, end_frame) {
+        (Some(start), Some(end)) => Some(SpeechSegment::new(
           start * (FRAME_SHIFT_SAMPLES as u64),
           end * (FRAME_SHIFT_SAMPLES as u64),
-        ));
+        )),
+        _ => None,
       }
-    }
-    None
+    } else {
+      None
+    };
+
+    (frame_result, segment)
   }
 
   /// EOF: if a segment is currently open, close it at the current frame
@@ -279,7 +304,7 @@ mod tests {
   fn drive(post: &mut Postprocessor, probs: &[f32]) -> Vec<SpeechSegment> {
     let mut out = Vec::new();
     for &p in probs {
-      let seg = post.push_probability(p);
+      let (_, seg) = post.push_probability(p);
       if let Some(s) = seg {
         out.push(s);
       }
