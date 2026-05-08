@@ -68,6 +68,16 @@ impl Postprocessor {
     &self.options
   }
 
+  /// Const-fn variant of `options()` used by `Vad::options()`.
+  pub(crate) const fn options_const(&self) -> &VadOptions {
+    &self.options
+  }
+
+  /// Number of frames consumed since the last reset.
+  pub(crate) const fn frame_count(&self) -> u64 {
+    self.frame_cnt_1based
+  }
+
   pub(crate) fn reset(&mut self) {
     self.smooth_window.clear();
     self.smooth_window_sum = 0.0;
