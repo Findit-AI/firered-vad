@@ -4,7 +4,7 @@
 //! Usage:
 //!     cargo run --example detect_file -- path/to/audio.wav
 
-use firered_vad::{Vad, VadEvent};
+use firered_vad::Vad;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
   let path = std::env::args()
@@ -35,28 +35,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
   let mut vad = Vad::bundled()?;
   for chunk in pcm.chunks(16_000) {
-    vad.push_samples(chunk)?;
-    while let Some(event) = vad.poll_event() {
-      if let VadEvent::SegmentClosed(s) = event {
-        println!(
-          "{:.3}s..{:.3}s  ({:>6} samples)",
-          s.start().as_secs_f32(),
-          s.end().as_secs_f32(),
-          s.sample_count()
-        );
-      }
+    let mut chunk: &[f32] = chunk;
+    while let Some(segment) = vad.push_samples(chunk)? {
+      println!(
+        "{:.3}s..{:.3}s  ({:>6} samples)",
+        segment.start().as_secs_f32(),
+        segment.end().as_secs_f32(),
+        segment.sample_count()
+      );
+      chunk = &[]; // drain remaining buffered segments before pushing the next chunk
     }
   }
-  vad.finish()?;
-  while let Some(event) = vad.poll_event() {
-    if let VadEvent::SegmentClosed(s) = event {
-      println!(
-        "{:.3}s..{:.3}s  ({:>6} samples)  (trailing)",
-        s.start().as_secs_f32(),
-        s.end().as_secs_f32(),
-        s.sample_count()
-      );
-    }
+  if let Some(segment) = vad.finish()? {
+    println!(
+      "{:.3}s..{:.3}s  ({:>6} samples)  (trailing)",
+      segment.start().as_secs_f32(),
+      segment.end().as_secs_f32(),
+      segment.sample_count()
+    );
   }
   Ok(())
 }

@@ -1,7 +1,7 @@
 //! Synthetic streaming demo: alternates 1 s of band-limited noise with
 //! 1 s of silence, then prints every closed segment.
 
-use firered_vad::{Vad, VadEvent};
+use firered_vad::Vad;
 
 const SAMPLE_RATE_HZ: u32 = 16_000;
 
@@ -30,29 +30,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   }
 
   for chunk in pcm.chunks(1_600) {
-    vad.push_samples(chunk)?;
-    while let Some(event) = vad.poll_event() {
-      if let VadEvent::SegmentClosed(s) = event {
-        println!(
-          "segment: {:.3}s..{:.3}s ({} samples)",
-          s.start().as_secs_f32(),
-          s.end().as_secs_f32(),
-          s.sample_count()
-        );
-      }
+    let mut chunk: &[f32] = chunk;
+    while let Some(segment) = vad.push_samples(chunk)? {
+      println!(
+        "segment: {:.3}s..{:.3}s ({} samples)",
+        segment.start().as_secs_f32(),
+        segment.end().as_secs_f32(),
+        segment.sample_count()
+      );
+      chunk = &[]; // drain remaining buffered segments before pushing the next chunk
     }
   }
 
-  vad.finish()?;
-  while let Some(event) = vad.poll_event() {
-    if let VadEvent::SegmentClosed(s) = event {
-      println!(
-        "segment (trailing): {:.3}s..{:.3}s ({} samples)",
-        s.start().as_secs_f32(),
-        s.end().as_secs_f32(),
-        s.sample_count()
-      );
-    }
+  if let Some(segment) = vad.finish()? {
+    println!(
+      "segment (trailing): {:.3}s..{:.3}s ({} samples)",
+      segment.start().as_secs_f32(),
+      segment.end().as_secs_f32(),
+      segment.sample_count()
+    );
   }
 
   Ok(())

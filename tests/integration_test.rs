@@ -2,12 +2,12 @@
 //!
 //! These tests deliberately avoid the crate-internal modules and instead
 //! drive the engine the same way callers do: construct a `Vad`, push
-//! PCM, drain events. They run against the bundled ONNX model and
+//! PCM, drain segments. They run against the bundled ONNX model and
 //! CMVN, so they're gated on the `bundled` feature.
 
 #![cfg(feature = "bundled")]
 
-use firered_vad::{Vad, VadEvent};
+use firered_vad::{SpeechSegment, Vad};
 
 const SAMPLE_RATE_HZ: u32 = 16_000;
 
@@ -47,13 +47,16 @@ fn pure_silence_produces_no_segments() {
   vad
     .push_samples(&vec![0.0; (SAMPLE_RATE_HZ * 2) as usize])
     .expect("push silence");
-  vad.finish().expect("finish");
   let mut segments = 0usize;
-  vad.drain_events(|ev| {
-    if matches!(ev, VadEvent::SegmentClosed(_)) {
-      segments += 1;
-    }
-  });
+  while vad.push_samples(&[]).expect("drain").is_some() {
+    segments += 1;
+  }
+  if vad.finish().expect("finish").is_some() {
+    segments += 1;
+  }
+  while vad.push_samples(&[]).expect("drain after finish").is_some() {
+    segments += 1;
+  }
   assert_eq!(segments, 0);
 }
 
@@ -63,15 +66,20 @@ fn synthetic_speech_then_silence_emits_at_least_one_segment() {
 
   let mut pcm = synthetic_speech_like(1.5); // 1.5 s of "speech"
   pcm.extend(vec![0.0; SAMPLE_RATE_HZ as usize]); // 1 s of silence
-  vad.push_samples(&pcm).expect("push samples");
-  vad.finish().expect("finish");
 
   let mut segments = Vec::new();
-  vad.drain_events(|ev| {
-    if let VadEvent::SegmentClosed(s) = ev {
-      segments.push(s);
-    }
-  });
+  if let Some(s) = vad.push_samples(&pcm).expect("push samples") {
+    segments.push(s);
+  }
+  while let Some(s) = vad.push_samples(&[]).expect("drain") {
+    segments.push(s);
+  }
+  if let Some(s) = vad.finish().expect("finish") {
+    segments.push(s);
+  }
+  while let Some(s) = vad.push_samples(&[]).expect("drain after finish") {
+    segments.push(s);
+  }
 
   assert!(!segments.is_empty(), "expected at least 1 closed segment");
   for s in &segments {
@@ -88,14 +96,23 @@ fn pushing_samples_in_arbitrary_chunks_yields_identical_event_stream() {
     p
   };
 
-  let collect = |chunk_size: usize| -> Vec<VadEvent> {
+  let collect = |chunk_size: usize| -> Vec<SpeechSegment> {
     let mut vad = Vad::bundled().expect("bundled");
     for chunk in pcm.chunks(chunk_size) {
       vad.push_samples(chunk).expect("push");
+      // drain any segments produced by this chunk
+      while vad.push_samples(&[]).expect("drain").is_some() {}
     }
-    vad.finish().expect("finish");
     let mut out = Vec::new();
-    vad.drain_events(|ev| out.push(ev));
+    while let Some(s) = vad.push_samples(&[]).expect("drain before finish") {
+      out.push(s);
+    }
+    if let Some(s) = vad.finish().expect("finish") {
+      out.push(s);
+    }
+    while let Some(s) = vad.push_samples(&[]).expect("drain after finish") {
+      out.push(s);
+    }
     out
   };
 
@@ -104,7 +121,7 @@ fn pushing_samples_in_arbitrary_chunks_yields_identical_event_stream() {
     assert_eq!(
       collect(chunk),
       baseline,
-      "event stream must be deterministic across chunkings (chunk_size={chunk})"
+      "segment stream must be deterministic across chunkings (chunk_size={chunk})"
     );
   }
 }
@@ -116,7 +133,7 @@ fn reset_returns_engine_to_freshly_constructed_state() {
   vad.reset();
 
   assert_eq!(vad.frame_count(), 0);
-  assert_eq!(vad.pending_events(), 0);
+  assert_eq!(vad.pending_segments(), 0);
   assert_eq!(vad.pending_samples(), 0);
   assert!(!vad.is_active());
   assert!(!vad.is_finished());

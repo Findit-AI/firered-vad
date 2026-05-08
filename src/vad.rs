@@ -5,7 +5,7 @@ use std::{collections::VecDeque, path::Path};
 use crate::{
   detector::Postprocessor,
   error::Result,
-  event::VadEvent,
+  event::SpeechSegment,
   features::{FeatureExtractor, NUM_MEL_BINS},
   inference::OrtRunner,
   options::VadOptions,
@@ -28,14 +28,14 @@ pub const BUNDLED_CMVN: &[u8] =
 /// Streaming Voice Activity Detector for the FireRedVAD model.
 ///
 /// `Vad` is a Sans-I/O state machine: callers push 16 kHz f32 PCM in
-/// `[-1.0, 1.0]` via [`Self::push_samples`] and pull
-/// [`VadEvent`]s via [`Self::poll_event`]. See the crate-level docs
-/// for the canonical streaming loop.
+/// `[-1.0, 1.0]` via [`Self::push_samples`], which returns the next
+/// available closed [`SpeechSegment`] (or `None`). See the crate-level
+/// docs for the canonical streaming loop.
 pub struct Vad {
   runner: OrtRunner,
   features: FeatureExtractor,
   detector: Postprocessor,
-  events: VecDeque<VadEvent>,
+  pending_segments: VecDeque<SpeechSegment>,
   feature_scratch: Vec<f32>,
   finished: bool,
 }
@@ -125,7 +125,7 @@ impl Vad {
       runner,
       features,
       detector,
-      events: VecDeque::new(),
+      pending_segments: VecDeque::new(),
       feature_scratch: vec![0.0; NUM_MEL_BINS],
       finished: false,
     })
@@ -133,49 +133,42 @@ impl Vad {
 
   // ── Sans-I/O surface ─────────────────────────────────────────────────
 
-  /// Push 16 kHz f32 PCM. Newly produced events are queued for `poll_event`.
-  pub fn push_samples(&mut self, pcm: &[f32]) -> Result<()> {
-    self.features.push_pcm(pcm);
-    while self.features.has_full_window() {
-      self.features.extract_one(&mut self.feature_scratch);
-      self.runner.push_feature(&self.feature_scratch);
-    }
-    if self.runner.pending_feature_frames() == 0 {
-      return Ok(());
-    }
-    let probs: Vec<f32> = self.runner.infer()?.to_vec();
-    for prob in probs {
-      let (frame_result, segment) = self.detector.push_probability(prob);
-      self.events.push_back(VadEvent::Frame(frame_result));
-      if let Some(s) = segment {
-        self.events.push_back(VadEvent::SegmentClosed(s));
+  /// Feed 16 kHz f32 PCM and return the next available closed segment.
+  ///
+  /// Returns `Ok(Some(segment))` when a segment is ready, `Ok(None)` when
+  /// none is available yet. Pass an empty slice (`&[]`) to drain buffered
+  /// segments without processing new PCM — useful when a single push
+  /// closes more than one segment (rare but possible at force-split).
+  pub fn push_samples(&mut self, pcm: &[f32]) -> Result<Option<SpeechSegment>> {
+    if !pcm.is_empty() {
+      self.features.push_pcm(pcm);
+      while self.features.has_full_window() {
+        self.features.extract_one(&mut self.feature_scratch);
+        self.runner.push_feature(&self.feature_scratch);
+      }
+      if self.runner.pending_feature_frames() > 0 {
+        let probs: Vec<f32> = self.runner.infer()?.to_vec();
+        for prob in probs {
+          if let Some(segment) = self.detector.push_probability(prob) {
+            self.pending_segments.push_back(segment);
+          }
+        }
       }
     }
-    Ok(())
+    Ok(self.pending_segments.pop_front())
   }
 
-  /// Mark end-of-stream. Closes any currently open segment.
-  pub fn finish(&mut self) -> Result<()> {
+  /// Mark end-of-stream. Returns the trailing segment if one was open, or
+  /// `None` when the stream ended in silence.
+  ///
+  /// Call `push_samples(&[])` after `finish` to drain any additionally
+  /// buffered segments in the rare multi-segment case.
+  pub fn finish(&mut self) -> Result<Option<SpeechSegment>> {
     self.finished = true;
     if let Some(segment) = self.detector.finish_active() {
-      self.events.push_back(VadEvent::SegmentClosed(segment));
+      self.pending_segments.push_back(segment);
     }
-    Ok(())
-  }
-
-  /// Pull the next queued event; `None` once the queue is empty.
-  pub fn poll_event(&mut self) -> Option<VadEvent> {
-    self.events.pop_front()
-  }
-
-  /// Drain the queue through a closure (thin convenience over `poll_event`).
-  pub fn drain_events<F>(&mut self, mut f: F)
-  where
-    F: FnMut(VadEvent),
-  {
-    while let Some(event) = self.events.pop_front() {
-      f(event);
-    }
+    Ok(self.pending_segments.pop_front())
   }
 
   /// Reset all per-stream state (caches, smoothing, state machine, queue,
@@ -184,7 +177,7 @@ impl Vad {
     self.runner.reset();
     self.features.reset();
     self.detector.reset();
-    self.events.clear();
+    self.pending_segments.clear();
     self.finished = false;
   }
 
@@ -227,9 +220,9 @@ impl Vad {
     self.finished
   }
 
-  /// Number of events in the queue awaiting `poll_event`.
-  pub fn pending_events(&self) -> usize {
-    self.events.len()
+  /// Number of buffered segments awaiting drain via `push_samples(&[])`.
+  pub fn pending_segments(&self) -> usize {
+    self.pending_segments.len()
   }
 }
 
@@ -237,8 +230,6 @@ impl Vad {
 mod tests {
   #[allow(unused_imports)]
   use super::*;
-  #[cfg(feature = "bundled")]
-  use crate::event::VadEvent;
 
   #[cfg(feature = "bundled")]
   #[test]
@@ -252,23 +243,21 @@ mod tests {
     let mut vad = Vad::bundled().expect("bundled constructs");
     vad.push_samples(&vec![0.0; 16_000]).expect("push silence");
     let mut segments = 0usize;
-    vad.drain_events(|ev| {
-      if matches!(ev, VadEvent::SegmentClosed(_)) {
-        segments += 1;
-      }
-    });
+    while vad.push_samples(&[]).expect("drain").is_some() {
+      segments += 1;
+    }
     assert_eq!(segments, 0);
     assert!(!vad.is_active());
   }
 
   #[cfg(feature = "bundled")]
   #[test]
-  fn reset_clears_event_queue_and_frame_counter() {
+  fn reset_clears_segment_queue_and_frame_counter() {
     let mut vad = Vad::bundled().expect("bundled");
     vad.push_samples(&vec![0.0; 1_600]).expect("push 100ms");
     vad.reset();
     assert_eq!(vad.frame_count(), 0);
-    assert_eq!(vad.pending_events(), 0);
+    assert_eq!(vad.pending_segments(), 0);
     assert_eq!(vad.pending_samples(), 0);
     assert!(!vad.is_finished());
   }
@@ -277,30 +266,13 @@ mod tests {
   #[test]
   fn finish_marks_finished_and_flushes_no_segment_when_idle() {
     let mut vad = Vad::bundled().expect("bundled");
-    vad.finish().expect("finish");
+    let result = vad.finish().expect("finish");
     assert!(vad.is_finished());
+    assert!(result.is_none());
     let mut segments = 0usize;
-    vad.drain_events(|ev| {
-      if matches!(ev, VadEvent::SegmentClosed(_)) {
-        segments += 1;
-      }
-    });
+    while vad.push_samples(&[]).expect("drain").is_some() {
+      segments += 1;
+    }
     assert_eq!(segments, 0);
-  }
-
-  #[cfg(feature = "bundled")]
-  #[test]
-  fn push_samples_emits_one_frame_event_per_full_10ms_frame() {
-    let mut vad = Vad::bundled().expect("bundled");
-    // Need 25 ms (400 samples) to produce the FIRST frame; subsequent
-    // frames need only 10 ms (160 samples) each. 5*160 + 240 = 1040 samples.
-    vad.push_samples(&vec![0.0; 1040]).expect("push samples");
-    let mut frames = 0usize;
-    vad.drain_events(|ev| {
-      if matches!(ev, VadEvent::Frame(_)) {
-        frames += 1;
-      }
-    });
-    assert_eq!(frames, 5);
   }
 }
