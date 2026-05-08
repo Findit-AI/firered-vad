@@ -12,6 +12,7 @@
 
 mod error;
 mod event;
+mod features;
 mod options;
 
 pub use error::{Error, Result};
