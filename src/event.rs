@@ -2,16 +2,28 @@
 //! [`FrameResult`] (per-frame inspection data, available via
 //! [`crate::Vad::recent_frames`]).
 
-use core::{ops::Range, time::Duration};
+use core::{fmt, ops::Range, time::Duration};
 
 /// One closed continuous human-speech window on the stream timeline.
 ///
 /// Slice the original PCM with [`Self::range_usize`] to recover the
 /// audio that triggered this segment.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SpeechSegment {
   start_sample: u64,
   end_sample: u64,
+}
+
+impl fmt::Display for SpeechSegment {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    write!(
+      f,
+      "SpeechSegment {{ start: {:.3}s, end: {:.3}s, duration: {:.3}s }}",
+      self.start().as_secs_f64(),
+      self.end().as_secs_f64(),
+      self.duration().as_secs_f64(),
+    )
+  }
 }
 
 impl SpeechSegment {
@@ -72,12 +84,18 @@ impl SpeechSegment {
 
   /// `Range<usize>` for slicing a `&[f32]` PCM buffer.
   ///
-  /// On 64-bit targets this is identity; on 32-bit targets segment indices
-  /// above `u32::MAX` saturate. Audio streams long enough to hit that
-  /// limit (~37 hours at 16 kHz) are not a v1 concern.
+  /// On 64-bit targets this is identity. On 32-bit targets where a
+  /// `u64` segment index would exceed `usize::MAX` (≈ 37 hours of audio
+  /// at 16 kHz), the bound is **saturated** to `usize::MAX` rather than
+  /// silently wrapped — passing the resulting range to a slice
+  /// indexing operation will panic with an out-of-bounds error rather
+  /// than produce a corrupt slice.
   #[cfg_attr(not(tarpaulin), inline(always))]
   pub fn range_usize(&self) -> Range<usize> {
-    (self.start_sample as usize)..(self.end_sample as usize)
+    let to_usize = |v: u64| -> usize {
+      if v > usize::MAX as u64 { usize::MAX } else { v as usize }
+    };
+    to_usize(self.start_sample)..to_usize(self.end_sample)
   }
 }
 

@@ -31,6 +31,16 @@ pub const BUNDLED_CMVN: &[u8] =
 /// `[-1.0, 1.0]` via [`Self::push_samples`], which returns the next
 /// available closed [`SpeechSegment`] (or `None`). See the crate-level
 /// docs for the canonical streaming loop.
+///
+/// # Thread safety
+///
+/// `Vad` implements [`Send`] but **not** [`Sync`]. The underlying
+/// `ort::Session` is `Send` but not `Sync` (ONNX Runtime sessions
+/// permit cross-thread move but not concurrent calls). To use one
+/// `Vad` instance across multiple threads, wrap it in a `Mutex` or
+/// equivalent. Consumers needing parallel inference typically
+/// construct one `Vad` per worker thread (cheap once the model bytes
+/// are bundled) rather than synchronising a single instance.
 pub struct Vad {
   runner: OrtRunner,
   features: FeatureExtractor,

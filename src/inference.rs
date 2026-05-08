@@ -60,17 +60,31 @@ impl OrtRunner {
   /// matching the model contract (`feat` + `caches_in` → `probs` +
   /// `caches_out`); the contract is asserted on first inference.
   pub(crate) fn from_ort_session(inner: OrtSession) -> Self {
+    // Pre-size the scratch buffers for a realistic streaming batch
+    // (10 frames × 80 mel bins ≈ 100 ms of audio at 10 ms hop). This
+    // moves the first-frame allocation into construction. Buffers
+    // grow if larger pushes arrive; the pre-size is a hint, not a cap.
+    const PRESIZED_FRAMES: usize = 10;
     Self {
       inner,
       caches: vec![0.0f32; CACHE_TOTAL],
-      feat_scratch: Vec::new(),
-      prob_scratch: Vec::new(),
+      feat_scratch: Vec::with_capacity(PRESIZED_FRAMES * NUM_MEL_BINS),
+      prob_scratch: Vec::with_capacity(PRESIZED_FRAMES),
     }
   }
 
-  /// Reset the per-stream cache to zero. Scratch buffers are kept.
+  /// Reset the per-stream cache to zero AND drop any in-flight
+  /// scratch state.
+  ///
+  /// Clearing `feat_scratch` and `prob_scratch` matters when `reset()`
+  /// is called mid-batch — i.e. between `push_feature` calls and
+  /// `infer`. Without this, stale features from the previous stream
+  /// would be processed by the next `infer()` call and corrupt the
+  /// new stream's first inference.
   pub(crate) fn reset(&mut self) {
     self.caches.fill(0.0);
+    self.feat_scratch.clear();
+    self.prob_scratch.clear();
   }
 
   /// Number of frames currently buffered in `feat_scratch`. Always a
@@ -122,7 +136,17 @@ impl OrtRunner {
       ],
     )?;
 
-    self.prob_scratch.extend_from_slice(probs_data);
+    // Clamp model output into [0, 1]. The bundled FireRedVAD model is
+    // sigmoid-terminated and produces values in range, but custom
+    // models passed via `from_ort_session` could violate that. Clamp
+    // here so the postprocessor's threshold comparison and the
+    // smoothing accumulator never see garbage. NaN propagates as 0.0
+    // (mirrors `options::sanitize_probability`).
+    self.prob_scratch.reserve(probs_data.len());
+    for &p in probs_data {
+      let clamped = if p.is_finite() { p.clamp(0.0, 1.0) } else { 0.0 };
+      self.prob_scratch.push(clamped);
+    }
     self.caches.copy_from_slice(caches_data);
 
     self.feat_scratch.clear();

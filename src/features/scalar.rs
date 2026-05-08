@@ -14,11 +14,18 @@ use super::{FRAME_LENGTH_SAMPLES, INT16_SCALE, LOG_FLOOR, NUM_MEL_BINS, PRE_EMPH
 /// Scale `pcm` (`[-1.0, 1.0]`) by `INT16_SCALE` and append into `out`.
 /// `out` must already have capacity for `pcm.len()` more elements; the
 /// caller has just `resize`d it to the desired final length.
+///
+/// Non-finite samples (NaN / ±Inf) are mapped to `0.0` before scaling
+/// — without this, a single NaN would propagate through the
+/// DC-removal mean, the FFT, the mel filterbank, and the CMVN step,
+/// then corrupt the DFSMN cache for the entire stream's remaining
+/// inferences. The cost is one `is_finite()` branch per sample, which
+/// LLVM lowers to a small mask + select on aarch64 / x86 alike.
 #[cfg_attr(not(tarpaulin), inline(always))]
 pub(crate) fn pcm_scale_extend(pcm: &[f32], out: &mut [f32]) {
   debug_assert_eq!(pcm.len(), out.len());
   for (dst, &src) in out.iter_mut().zip(pcm.iter()) {
-    *dst = src * INT16_SCALE;
+    *dst = if src.is_finite() { src * INT16_SCALE } else { 0.0 };
   }
 }
 

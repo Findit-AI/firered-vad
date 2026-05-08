@@ -128,6 +128,7 @@ impl SessionOptions {
 
   /// Builder variant of [`Self::set_optimization_level`].
   #[cfg_attr(not(tarpaulin), inline(always))]
+  #[must_use]
   pub const fn with_optimization_level(mut self, level: GraphOptimizationLevel) -> Self {
     self.optimization_level = level;
     self
@@ -271,6 +272,7 @@ impl VadOptions {
 
   /// Builder variant of [`Self::set_smooth_window_size`].
   #[cfg_attr(not(tarpaulin), inline(always))]
+  #[must_use]
   pub const fn with_smooth_window_size(mut self, size: u32) -> Self {
     self.smooth_window_size = size;
     self
@@ -291,6 +293,7 @@ impl VadOptions {
 
   /// Builder variant of [`Self::set_speech_threshold`].
   #[cfg_attr(not(tarpaulin), inline(always))]
+  #[must_use]
   pub const fn with_speech_threshold(mut self, t: f32) -> Self {
     self.speech_threshold = sanitize_probability(t);
     self
@@ -311,6 +314,7 @@ impl VadOptions {
 
   /// Builder variant of [`Self::set_pad_start`].
   #[cfg_attr(not(tarpaulin), inline(always))]
+  #[must_use]
   pub const fn with_pad_start(mut self, d: Duration) -> Self {
     self.pad_start = d;
     self
@@ -331,6 +335,7 @@ impl VadOptions {
 
   /// Builder variant of [`Self::set_min_speech_duration`].
   #[cfg_attr(not(tarpaulin), inline(always))]
+  #[must_use]
   pub const fn with_min_speech_duration(mut self, d: Duration) -> Self {
     self.min_speech_duration = d;
     self
@@ -351,6 +356,7 @@ impl VadOptions {
 
   /// Builder variant of [`Self::set_max_speech_duration`].
   #[cfg_attr(not(tarpaulin), inline(always))]
+  #[must_use]
   pub const fn with_max_speech_duration(mut self, d: Duration) -> Self {
     self.max_speech_duration = Some(d);
     self
@@ -358,6 +364,7 @@ impl VadOptions {
 
   /// Disable max-speech force-splitting.
   #[cfg_attr(not(tarpaulin), inline(always))]
+  #[must_use]
   pub const fn clear_max_speech_duration(mut self) -> Self {
     self.max_speech_duration = None;
     self
@@ -378,6 +385,7 @@ impl VadOptions {
 
   /// Builder variant of [`Self::set_min_silence_duration`].
   #[cfg_attr(not(tarpaulin), inline(always))]
+  #[must_use]
   pub const fn with_min_silence_duration(mut self, d: Duration) -> Self {
     self.min_silence_duration = d;
     self
@@ -398,6 +406,7 @@ impl VadOptions {
 
   /// Builder variant of [`Self::set_session_options`].
   #[cfg_attr(not(tarpaulin), inline(always))]
+  #[must_use]
   pub const fn with_session_options(mut self, opts: SessionOptions) -> Self {
     self.session_options = opts;
     self
@@ -503,6 +512,15 @@ mod tests {
     assert_eq!(duration_to_frames(Duration::from_millis(15)), 1);
     assert_eq!(duration_to_frames(Duration::from_millis(20)), 2);
     assert_eq!(duration_to_frames(Duration::ZERO), 0);
+    // Sub-frame durations: anything < 10 ms → 0 frames.
+    assert_eq!(duration_to_frames(Duration::from_nanos(1)), 0);
+    assert_eq!(duration_to_frames(Duration::from_millis(9)), 0);
+    // Boundary at 10 ms = exactly 1 frame.
+    assert_eq!(duration_to_frames(Duration::from_millis(10)), 1);
+    // Saturates at u32::MAX rather than wrapping for very large
+    // inputs (Duration::MAX is ~5.85 × 10¹¹ years; the saturate
+    // branch in `duration_to_frames` covers it).
+    assert_eq!(duration_to_frames(Duration::MAX), u32::MAX);
   }
 
   #[cfg(feature = "serde")]

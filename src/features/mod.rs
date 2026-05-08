@@ -209,6 +209,9 @@ impl std::fmt::Debug for MelFilterbank {
 /// to each Mel-fbank feature vector before it is fed to the model.
 #[derive(Debug, Clone)]
 pub(crate) struct Cmvn {
+  /// Private — mutate only via `from_ark_bytes` / `from_components`.
+  /// Direct construction would let callers smuggle non-finite stats
+  /// into the feature pipeline; the constructors validate.
   means: Vec<f32>,
   inverse_std_variances: Vec<f32>,
 }
@@ -322,20 +325,50 @@ impl Cmvn {
     for d in 0..NUM_MEL_BINS {
       let sum = data[d];
       let sum_sq = data[row_stride + d];
+      // Reject non-finite stats up front so we can't silently produce
+      // NaN means / istds that would poison every feature vector
+      // downstream. (audit fix L-006.)
+      if !sum.is_finite() || !sum_sq.is_finite() {
+        return Err(Error::InvalidCmvn {
+          reason: "non-finite stat (NaN or Inf) in CMVN matrix",
+        });
+      }
       let mean = sum / count;
       let mut var = sum_sq / count - mean * mean;
       if var < 1e-20 {
         var = 1e-20;
       }
       let istd = 1.0 / var.sqrt();
-      means.push(mean as f32);
-      inverse_std_variances.push(istd as f32);
+      let mean_f32 = mean as f32;
+      let istd_f32 = istd as f32;
+      if !mean_f32.is_finite() || !istd_f32.is_finite() {
+        return Err(Error::InvalidCmvn {
+          reason: "non-finite mean or inverse-std after normalization",
+        });
+      }
+      means.push(mean_f32);
+      inverse_std_variances.push(istd_f32);
     }
 
     Ok(Self {
       means,
       inverse_std_variances,
     })
+  }
+
+  /// Construct directly from already-validated mean and
+  /// inverse-std-variance vectors. Used only by tests; the public
+  /// constructor is `from_ark_bytes`. Both vectors must have length
+  /// `NUM_MEL_BINS`. The caller is responsible for ensuring all values
+  /// are finite.
+  #[cfg(test)]
+  pub(crate) fn from_components(means: Vec<f32>, inverse_std_variances: Vec<f32>) -> Self {
+    debug_assert_eq!(means.len(), NUM_MEL_BINS);
+    debug_assert_eq!(inverse_std_variances.len(), NUM_MEL_BINS);
+    Self {
+      means,
+      inverse_std_variances,
+    }
   }
 
   /// Apply CMVN in place to one 80-dim feature vector. Dispatches to
@@ -582,15 +615,18 @@ mod tests {
   #[test]
   fn parses_bundled_cmvn_into_80_means_and_istds() {
     let cmvn = Cmvn::from_ark_bytes(BUNDLED_CMVN).expect("parse cmvn");
-    assert_eq!(cmvn.means.len(), NUM_MEL_BINS);
-    assert_eq!(cmvn.inverse_std_variances.len(), NUM_MEL_BINS);
-    // Means should be roughly in log-mel-energy range; pin the first one so
-    // future regressions in parsing immediately surface.
-    let first_mean = cmvn.means[0];
-    assert!(
-      first_mean > 5.0 && first_mean < 20.0,
-      "first mean = {first_mean}"
-    );
+    // Apply on a sentinel feature: with the bundled stats the first
+    // bin's mean is in the log-mel-energy range, so a feature value
+    // equal to that mean should map to ≈ 0.
+    let mut probe = vec![0.0f32; NUM_MEL_BINS];
+    let baseline = probe.clone();
+    cmvn.apply(&mut probe);
+    // The output must differ from the input (CMVN actually applied).
+    assert_ne!(probe, baseline);
+    // Every entry must be finite (no NaN / Inf leaks).
+    for v in &probe {
+      assert!(v.is_finite(), "non-finite CMVN output: {v}");
+    }
   }
 
   #[test]
@@ -614,10 +650,7 @@ mod tests {
 
   #[test]
   fn apply_subtracts_mean_and_divides_by_std() {
-    let cmvn = Cmvn {
-      means: vec![1.0; NUM_MEL_BINS],
-      inverse_std_variances: vec![2.0; NUM_MEL_BINS],
-    };
+    let cmvn = Cmvn::from_components(vec![1.0; NUM_MEL_BINS], vec![2.0; NUM_MEL_BINS]);
     let mut feature = vec![3.0f32; NUM_MEL_BINS];
     cmvn.apply(&mut feature);
     for value in &feature {

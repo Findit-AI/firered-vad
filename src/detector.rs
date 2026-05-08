@@ -63,10 +63,25 @@ impl Postprocessor {
     }
   }
 
-  /// Replace options. Existing in-flight state is preserved (matches the
-  /// "set_options at runtime" use case where you're tuning thresholds).
+  /// Replace options. Existing 4-state-machine state (current state,
+  /// `speech_cnt`, `silence_cnt`, `frame_cnt_1based`,
+  /// `last_speech_*_frame`) is preserved so callers can re-tune
+  /// thresholds mid-stream.
+  ///
+  /// However, if the new options change `smooth_window_size`, the
+  /// internal smoothing window is **cleared** — keeping a stale
+  /// VecDeque sized for the old window would either over-fill (when
+  /// `old > new`) or under-fill (when `old < new`), and the running
+  /// `f64` sum would no longer match the queue contents. Clearing
+  /// matches the invariant `smooth_window.len() <= smooth_window_size`.
   pub(crate) fn set_options(&mut self, options: VadOptions) {
+    let old_window = self.options.smooth_window_size_frames();
+    let new_window = options.smooth_window_size_frames();
     self.options = options;
+    if new_window != old_window {
+      self.smooth_window.clear();
+      self.smooth_window_sum = 0.0;
+    }
   }
 
   /// Const-fn variant of `options()` used by `Vad::options()`.
@@ -238,7 +253,12 @@ impl Postprocessor {
       }
     }
 
-    let frame_index_0based = self.frame_cnt_1based - 1;
+    // `frame_cnt_1based` was incremented at the top of this method,
+    // so the subtraction is always >= 0 in normal flow. Use
+    // `saturating_sub` defensively — if a future refactor removes the
+    // increment, this stays valid (`0`) instead of panicking in debug
+    // or wrapping in release.
+    let frame_index_0based = self.frame_cnt_1based.saturating_sub(1);
     let frame_result = FrameResult::new(
       frame_index_0based,
       raw_prob,
