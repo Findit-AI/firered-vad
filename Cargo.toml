@@ -2,7 +2,7 @@
 name = "firered-vad"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.95"
 license = "MIT OR Apache-2.0"
 description = "Streaming Voice Activity Detection wrapping the FireRedVAD model via ONNX Runtime"
 repository = "https://github.com/uqio/firered-vad"
@@ -54,7 +54,7 @@ serde_json = "1"
 # anyway (timing infrastructure isn't exposed under wasi), so gate
 # the dep to non-wasm hosts. Mirrors colconv's pattern.
 [target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
-criterion = { version = "0.5", default-features = false, features = ["html_reports"] }
+criterion = { version = "0.8", default-features = false, features = ["html_reports"] }
 
 [profile.bench]
 opt-level = 3
