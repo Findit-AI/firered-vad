@@ -20,29 +20,31 @@ firered-vad = { version = "0.1", default-features = false }
 
 ## Quick start
 
-```rust
+```rust,no_run
 use firered_vad::{Vad, VadEvent};
 
-let mut vad = Vad::bundled()?;
-let pcm: Vec<f32> = /* 16 kHz f32 PCM in [-1.0, 1.0] */;
+fn main() -> firered_vad::Result<()> {
+    let pcm: Vec<f32> = vec![0.0; 16_000]; // 16 kHz f32 PCM in [-1.0, 1.0]
+    let mut vad = Vad::bundled()?;
 
-for chunk in pcm.chunks(1_600) {
-    vad.push_samples(chunk)?;
-    while let Some(event) = vad.poll_event() {
-        if let VadEvent::SegmentClosed(segment) = event {
-            // Slice the original PCM to recover the speech window.
-            let speech = &pcm[segment.range_usize()];
-            // ... feed `speech` into Whisper / your transcriber.
+    for chunk in pcm.chunks(1_600) {
+        vad.push_samples(chunk)?;
+        while let Some(event) = vad.poll_event() {
+            if let VadEvent::SegmentClosed(segment) = event {
+                // Slice the original PCM to recover the speech window.
+                let _speech = &pcm[segment.range_usize()];
+                // ... feed `speech` into Whisper / your transcriber.
+            }
         }
     }
-}
-vad.finish()?;
-while let Some(event) = vad.poll_event() {
-    if let VadEvent::SegmentClosed(segment) = event {
-        // Trailing segment (open at end-of-stream).
+    vad.finish()?;
+    while let Some(event) = vad.poll_event() {
+        if let VadEvent::SegmentClosed(_segment) = event {
+            // Trailing segment (open at end-of-stream).
+        }
     }
+    Ok(())
 }
-# Ok::<(), firered_vad::Error>(())
 ```
 
 ## API at a glance
@@ -90,6 +92,16 @@ let opts = VadOptions::new()
 | `bundled` | yes | Embed the ONNX model + CMVN as `BUNDLED_MODEL` / `BUNDLED_CMVN` constants |
 | `serde` | no | `Serialize` / `Deserialize` for `VadOptions` and `SessionOptions`; Duration fields use `humantime-serde` |
 | `coreml`, `directml`, `cuda`, `rocm`, `tensorrt`, `openvino` | no | Pass-through to `ort` for the matching execution provider |
+
+## Parity status
+
+Bit-for-bit parity with upstream Python's `StreamVadPostprocessor` is the design contract. The v1 verification rests on:
+
+- The integration test (`tests/integration_test.rs::pushing_samples_in_arbitrary_chunks_yields_identical_event_stream`) — proves the streaming pipeline is deterministic across chunk sizes.
+- Hand-derived state-machine unit tests in `src/detector.rs::tests`.
+- Empirical model contract verification at construction time (ONNX I/O shapes).
+
+A per-frame numerical parity harness against the upstream Python reference (planned for `tests/parity/`) is deferred post-v1.
 
 ## License
 

@@ -1,12 +1,6 @@
-//! Streaming Voice Activity Detection wrapping the FireRedVAD model via ONNX Runtime.
-//!
-//! See `docs/superpowers/specs/2026-05-08-firered-vad-design.md` for the
-//! full design. The remaining modules are landed in subsequent commits;
-//! at this point in the implementation the crate exposes only the value
-//! types from `error` and `event` plus the configuration types from
-//! `options`.
-
+#![doc = include_str!("../README.md")]
 #![cfg_attr(docsrs, feature(doc_cfg))]
+#![cfg_attr(docsrs, allow(unused_attributes))]
 #![deny(missing_docs)]
 #![forbid(unsafe_code)]
 

@@ -208,7 +208,7 @@ impl Vad {
   }
 
   /// Total number of 10 ms frames consumed since the last reset.
-  pub fn frame_count(&self) -> u64 {
+  pub const fn frame_count(&self) -> u64 {
     self.detector.frame_count()
   }
 

@@ -35,13 +35,6 @@ pub enum Error {
     reason: &'static str,
   },
 
-  /// The caller pushed PCM at a sample rate the model does not support.
-  #[error("input PCM sample rate is unsupported (model is fixed at {expected} Hz)")]
-  UnsupportedSampleRate {
-    /// The sample rate the model expects (always 16_000 for FireRedVAD).
-    expected: u32,
-  },
-
   /// An ONNX output tensor had an unexpected shape.
   #[error("ONNX output {tensor} had unexpected shape {shape:?}")]
   UnexpectedOutputShape {
@@ -49,13 +42,6 @@ pub enum Error {
     tensor: &'static str,
     /// The actual shape returned by the ONNX runtime.
     shape: Vec<i64>,
-  },
-
-  /// A speech-threshold value was outside the valid `[0, 1]` range and could not be sanitized.
-  #[error("invalid speech threshold {value} (must be in [0, 1])")]
-  InvalidSpeechThreshold {
-    /// The offending value.
-    value: f32,
   },
 }
 
@@ -65,15 +51,6 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[cfg(test)]
 mod tests {
   use super::*;
-
-  #[test]
-  fn unsupported_sample_rate_displays_expected_value() {
-    let err = Error::UnsupportedSampleRate { expected: 16_000 };
-    assert_eq!(
-      err.to_string(),
-      "input PCM sample rate is unsupported (model is fixed at 16000 Hz)"
-    );
-  }
 
   #[test]
   fn invalid_cmvn_carries_static_reason() {

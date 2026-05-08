@@ -320,10 +320,7 @@ impl MelFilterbank {
     samples[0] -= PRE_EMPHASIS * samples[0];
 
     // 3. Window with Povey.
-    for (i, (s, w)) in samples.iter_mut().zip(self.povey_window.iter()).enumerate() {
-      if i >= FRAME_LENGTH_SAMPLES {
-        break;
-      }
+    for (s, w) in samples.iter_mut().zip(self.povey_window.iter()) {
       *s *= w;
     }
 
@@ -342,19 +339,12 @@ impl MelFilterbank {
 
     // 5. Power spectrum (|X|^2) for the non-redundant half.
     let mut power: [f32; FFT_BINS] = [0.0; FFT_BINS];
-    for (i, (p, c)) in power.iter_mut().zip(self.fft_buf.iter()).enumerate() {
-      if i >= FFT_BINS {
-        break;
-      }
+    for (p, c) in power.iter_mut().zip(self.fft_buf.iter()) {
       *p = c.re * c.re + c.im * c.im;
     }
 
     // 6. Mel filterbank → log.
-    for (b, out_val) in out.iter_mut().enumerate() {
-      if b >= NUM_MEL_BINS {
-        break;
-      }
-      let f = &self.filters[b];
+    for (out_val, f) in out.iter_mut().zip(self.filters.iter()) {
       let mut energy = 0.0f32;
       for (j, w) in f.weights.iter().enumerate() {
         energy += power[f.start_bin + j] * *w;
