@@ -70,10 +70,7 @@ pub mod __bench_internals {
       inner::window_apply(samples, window);
     }
     #[inline]
-    pub fn power_spectrum(
-      complex: &[rustfft::num_complex::Complex<f32>],
-      out: &mut [f32],
-    ) {
+    pub fn power_spectrum(complex: &[rustfft::num_complex::Complex<f32>], out: &mut [f32]) {
       inner::power_spectrum(complex, out);
     }
     #[inline]
@@ -108,10 +105,7 @@ pub mod __bench_internals {
       unsafe { inner::window_apply(samples, window) }
     }
     #[inline]
-    pub unsafe fn power_spectrum(
-      complex: &[rustfft::num_complex::Complex<f32>],
-      out: &mut [f32],
-    ) {
+    pub unsafe fn power_spectrum(complex: &[rustfft::num_complex::Complex<f32>], out: &mut [f32]) {
       unsafe { inner::power_spectrum(complex, out) }
     }
     #[inline]
@@ -143,10 +137,7 @@ pub mod __bench_internals {
       unsafe { inner::window_apply(samples, window) }
     }
     #[inline]
-    pub unsafe fn power_spectrum(
-      complex: &[rustfft::num_complex::Complex<f32>],
-      out: &mut [f32],
-    ) {
+    pub unsafe fn power_spectrum(complex: &[rustfft::num_complex::Complex<f32>], out: &mut [f32]) {
       unsafe { inner::power_spectrum(complex, out) }
     }
     #[inline]
@@ -178,10 +169,7 @@ pub mod __bench_internals {
       unsafe { inner::window_apply(samples, window) }
     }
     #[inline]
-    pub unsafe fn power_spectrum(
-      complex: &[rustfft::num_complex::Complex<f32>],
-      out: &mut [f32],
-    ) {
+    pub unsafe fn power_spectrum(complex: &[rustfft::num_complex::Complex<f32>], out: &mut [f32]) {
       unsafe { inner::power_spectrum(complex, out) }
     }
     #[inline]
@@ -213,10 +201,7 @@ pub mod __bench_internals {
       unsafe { inner::window_apply(samples, window) }
     }
     #[inline]
-    pub unsafe fn power_spectrum(
-      complex: &[rustfft::num_complex::Complex<f32>],
-      out: &mut [f32],
-    ) {
+    pub unsafe fn power_spectrum(complex: &[rustfft::num_complex::Complex<f32>], out: &mut [f32]) {
       unsafe { inner::power_spectrum(complex, out) }
     }
     #[inline]

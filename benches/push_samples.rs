@@ -51,8 +51,7 @@ fn bench(c: &mut Criterion) {
   group.throughput(Throughput::Elements(n_frames));
 
   // (chunk_samples, label).
-  const CHUNKS: &[(usize, &str)] =
-    &[(160, "10ms"), (1_600, "100ms"), (16_000, "1s")];
+  const CHUNKS: &[(usize, &str)] = &[(160, "10ms"), (1_600, "100ms"), (16_000, "1s")];
 
   for &(chunk, label) in CHUNKS {
     group.bench_with_input(BenchmarkId::from_parameter(label), &chunk, |b, &chunk| {

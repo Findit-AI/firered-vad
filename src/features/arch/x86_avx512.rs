@@ -127,12 +127,8 @@ pub(crate) unsafe fn power_spectrum(
   let n = complex.len();
   unsafe {
     // Static index vectors for the de-interleave.
-    let idx_re = _mm512_setr_epi32(
-      0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30,
-    );
-    let idx_im = _mm512_setr_epi32(
-      1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31,
-    );
+    let idx_re = _mm512_setr_epi32(0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30);
+    let idx_im = _mm512_setr_epi32(1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31);
     let mut i = 0usize;
     let base = complex.as_ptr() as *const f32;
     while i + 16 <= n {

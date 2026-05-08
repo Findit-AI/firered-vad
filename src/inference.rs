@@ -144,7 +144,11 @@ impl OrtRunner {
     // (mirrors `options::sanitize_probability`).
     self.prob_scratch.reserve(probs_data.len());
     for &p in probs_data {
-      let clamped = if p.is_finite() { p.clamp(0.0, 1.0) } else { 0.0 };
+      let clamped = if p.is_finite() {
+        p.clamp(0.0, 1.0)
+      } else {
+        0.0
+      };
       self.prob_scratch.push(clamped);
     }
     self.caches.copy_from_slice(caches_data);

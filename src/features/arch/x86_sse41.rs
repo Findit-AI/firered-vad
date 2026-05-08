@@ -132,7 +132,7 @@ pub(crate) unsafe fn power_spectrum(
     let base = complex.as_ptr() as *const f32;
     while i + 4 <= n {
       // Load 8 floats (4 complex pairs) as two 128-bit chunks.
-      let a = _mm_loadu_ps(base.add(i * 2));     // re0 im0 re1 im1
+      let a = _mm_loadu_ps(base.add(i * 2)); // re0 im0 re1 im1
       let b = _mm_loadu_ps(base.add(i * 2 + 4)); // re2 im2 re3 im3
       // Even-indexed lanes → re; odd-indexed lanes → im.
       // _mm_shuffle_ps mask layout: (b3 b2 a3 a2) for low half-pair-pick.

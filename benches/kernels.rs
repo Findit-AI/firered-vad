@@ -16,11 +16,9 @@
 use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use firered_vad::__bench_internals::{
-  FFT_BINS, FRAME_LENGTH_SAMPLES, NUM_MEL_BINS, scalar,
-};
 #[cfg(target_arch = "aarch64")]
 use firered_vad::__bench_internals::neon;
+use firered_vad::__bench_internals::{FFT_BINS, FRAME_LENGTH_SAMPLES, NUM_MEL_BINS, scalar};
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 use firered_vad::__bench_internals::{x86_avx2, x86_avx512, x86_sse41};
 
@@ -141,9 +139,7 @@ fn bench_window_apply(c: &mut Criterion) {
   group.bench_function(BenchmarkId::new("neon", FRAME_LENGTH_SAMPLES), |b| {
     b.iter_batched(
       || baseline.clone(),
-      |mut samples| unsafe {
-        neon::window_apply(black_box(&mut samples), black_box(&window))
-      },
+      |mut samples| unsafe { neon::window_apply(black_box(&mut samples), black_box(&window)) },
       criterion::BatchSize::SmallInput,
     );
   });
@@ -221,9 +217,7 @@ fn bench_power_spectrum(c: &mut Criterion) {
     }
     if std::arch::is_x86_feature_detected!("avx512f") {
       group.bench_function(BenchmarkId::new("avx512f", FFT_BINS), |b| {
-        b.iter(|| unsafe {
-          x86_avx512::power_spectrum(black_box(&complex), black_box(&mut out))
-        });
+        b.iter(|| unsafe { x86_avx512::power_spectrum(black_box(&complex), black_box(&mut out)) });
       });
     }
   }
@@ -248,7 +242,9 @@ fn bench_cmvn_apply(c: &mut Criterion) {
   group.bench_function(BenchmarkId::new("scalar", NUM_MEL_BINS), |b| {
     b.iter_batched(
       || baseline.clone(),
-      |mut feature| scalar::cmvn_apply(black_box(&mut feature), black_box(&means), black_box(&istd)),
+      |mut feature| {
+        scalar::cmvn_apply(black_box(&mut feature), black_box(&means), black_box(&istd))
+      },
       criterion::BatchSize::SmallInput,
     );
   });
@@ -339,12 +335,9 @@ fn bench_mel_dot_log(c: &mut Criterion) {
           });
         });
       }
-      if std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma")
-      {
+      if std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma") {
         group.bench_function(BenchmarkId::new("avx2", w), |b| {
-          b.iter(|| unsafe {
-            x86_avx2::mel_dot_log(black_box(&power_slice), black_box(&weights))
-          });
+          b.iter(|| unsafe { x86_avx2::mel_dot_log(black_box(&power_slice), black_box(&weights)) });
         });
       }
       if std::arch::is_x86_feature_detected!("avx512f") {

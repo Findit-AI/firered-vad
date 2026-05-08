@@ -25,7 +25,11 @@ use super::{FRAME_LENGTH_SAMPLES, INT16_SCALE, LOG_FLOOR, NUM_MEL_BINS, PRE_EMPH
 pub(crate) fn pcm_scale_extend(pcm: &[f32], out: &mut [f32]) {
   debug_assert_eq!(pcm.len(), out.len());
   for (dst, &src) in out.iter_mut().zip(pcm.iter()) {
-    *dst = if src.is_finite() { src * INT16_SCALE } else { 0.0 };
+    *dst = if src.is_finite() {
+      src * INT16_SCALE
+    } else {
+      0.0
+    };
   }
 }
 

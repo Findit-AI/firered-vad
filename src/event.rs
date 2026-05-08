@@ -93,7 +93,11 @@ impl SpeechSegment {
   #[cfg_attr(not(tarpaulin), inline(always))]
   pub fn range_usize(&self) -> Range<usize> {
     let to_usize = |v: u64| -> usize {
-      if v > usize::MAX as u64 { usize::MAX } else { v as usize }
+      if v > usize::MAX as u64 {
+        usize::MAX
+      } else {
+        v as usize
+      }
     };
     to_usize(self.start_sample)..to_usize(self.end_sample)
   }
