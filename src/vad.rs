@@ -387,6 +387,9 @@ mod tests {
     vad.push_samples(&vec![0.0; 1040]).expect("push");
     assert!(!vad.recent_frames().is_empty());
     let _ = vad.push_samples(&[]).expect("drain"); // empty push should NOT clear
-    assert!(!vad.recent_frames().is_empty(), "drain calls preserve recent_frames");
+    assert!(
+      !vad.recent_frames().is_empty(),
+      "drain calls preserve recent_frames"
+    );
   }
 }

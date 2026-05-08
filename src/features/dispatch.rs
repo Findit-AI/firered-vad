@@ -88,10 +88,7 @@ pub(super) fn window_apply(samples: &mut [f32], window: &[f32]) {
 
 /// Power spectrum `|X|^2` over the non-redundant FFT half.
 #[cfg_attr(not(tarpaulin), inline(always))]
-pub(super) fn power_spectrum(
-  complex: &[rustfft::num_complex::Complex<f32>],
-  out: &mut [f32],
-) {
+pub(super) fn power_spectrum(complex: &[rustfft::num_complex::Complex<f32>], out: &mut [f32]) {
   #[cfg(target_arch = "aarch64")]
   {
     if neon_available() {

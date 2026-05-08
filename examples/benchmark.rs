@@ -16,11 +16,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   let mut reader = hound::WavReader::open(&path)?;
   let spec = reader.spec();
   if spec.sample_rate != 16_000 || spec.channels != 1 {
-    return Err(format!(
-      "expected 16 kHz mono; got {} Hz {}-channel",
-      spec.sample_rate, spec.channels
-    )
-    .into());
+    return Err(
+      format!(
+        "expected 16 kHz mono; got {} Hz {}-channel",
+        spec.sample_rate, spec.channels
+      )
+      .into(),
+    );
   }
   let pcm: Vec<f32> = match spec.sample_format {
     hound::SampleFormat::Int => reader
@@ -30,7 +32,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     hound::SampleFormat::Float => reader.samples::<f32>().collect::<Result<_, _>>()?,
   };
   let duration_s = pcm.len() as f64 / 16_000.0;
-  println!("file: {} ({:.2} s, {} samples)", path, duration_s, pcm.len());
+  println!(
+    "file: {} ({:.2} s, {} samples)",
+    path,
+    duration_s,
+    pcm.len()
+  );
   println!();
 
   // ── Mode A: single-shot ────────────────────────────────────────
@@ -40,7 +47,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = vad.push_samples(&pcm)?;
     let _ = vad.finish()?;
     let elapsed = start.elapsed();
-    let segments_count = vad.recent_frames().iter().filter(|f| f.is_speech_end()).count();
+    let segments_count = vad
+      .recent_frames()
+      .iter()
+      .filter(|f| f.is_speech_end())
+      .count();
     println!(
       "single-shot push: {:.3} s wall  ({:.2}× realtime, {} segments)",
       elapsed.as_secs_f64(),

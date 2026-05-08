@@ -131,10 +131,7 @@ impl Postprocessor {
 impl Postprocessor {
   /// Push one raw frame probability. Returns the per-frame state (always)
   /// plus `Some(SpeechSegment)` if this frame closed a segment.
-  pub(crate) fn push_probability(
-    &mut self,
-    raw_prob: f32,
-  ) -> (FrameResult, Option<SpeechSegment>) {
+  pub(crate) fn push_probability(&mut self, raw_prob: f32) -> (FrameResult, Option<SpeechSegment>) {
     self.frame_cnt_1based += 1;
     let smoothed = self.smooth(raw_prob);
     let is_speech = smoothed >= self.options.speech_threshold();

@@ -11,4 +11,4 @@ tests/parity/rust/target/
 tests/parity/rust/Cargo.lock
 *.pyc
 __pycache__/
-
+docs/

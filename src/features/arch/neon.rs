@@ -24,7 +24,8 @@
 //! `len % 4` elements through the matching scalar helper from
 //! `super::super::scalar`.
 
-#![allow(clippy::missing_safety_doc)] // each fn has explicit `# Safety` in its doc.
+#![allow(clippy::missing_safety_doc)]
+// each fn has explicit `# Safety` in its doc.
 // `core::arch::aarch64::*` intrinsics are `unsafe fn` in the standard
 // library; this module exists precisely to wrap them. The crate's
 // blanket `deny(unsafe_code)` in `lib.rs` is opted out of here only.

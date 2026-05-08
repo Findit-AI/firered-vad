@@ -461,9 +461,10 @@ impl FeatureExtractor {
     // Pass the 25 ms head of pcm_tail directly to the fbank — `extract`
     // copies into its own `samples_scratch`, so the slice doesn't need to
     // be a separate scratch buffer.
-    self
-      .fbank
-      .extract(&self.pcm_tail[..FRAME_LENGTH_SAMPLES], &mut self.feature_scratch);
+    self.fbank.extract(
+      &self.pcm_tail[..FRAME_LENGTH_SAMPLES],
+      &mut self.feature_scratch,
+    );
     self.cmvn.apply(&mut self.feature_scratch);
     out.copy_from_slice(&self.feature_scratch);
 
