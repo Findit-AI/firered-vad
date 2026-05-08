@@ -1,26 +1,29 @@
-codecov:
-  require_ci_to_pass: false
-
-ignore:
-  - **benches/*
-  - **examples/*
-  - **tests/*
-
 coverage:
   status:
-    project: # Overall project status
+    project:
       default:
         target: auto
-        if_not_found: success
-        only_pulls: false
-    patch: # Status for the patch in pull requests
+        threshold: 1%
+    patch:
       default:
         target: auto
-        if_not_found: success
-        only_pulls: true
-    changes: false # Whether to comment on the coverage changes in pull requests
+        threshold: 1%
+
+ignore:
+  - "benches/"
+  - "examples/"
+  - "tests/"
+  - "build.rs"
+
+codecov:
+  require_ci_to_pass: true
+  notify:
+    require_ci_to_pass: true
 
 comment:
-  layout: "header, diff, files, footer"
+  layout: "reach,diff,flags,tree"
   behavior: default
   require_changes: false
+  require_base: false
+  require_head: false
+
