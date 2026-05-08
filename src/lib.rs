@@ -10,6 +10,7 @@
 #![deny(missing_docs)]
 #![forbid(unsafe_code)]
 
+mod detector;
 mod error;
 mod event;
 mod features;
