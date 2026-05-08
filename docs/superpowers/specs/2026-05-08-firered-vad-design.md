@@ -87,8 +87,12 @@ mod vad;
 
 pub use error::{Error, Result};
 pub use event::{FrameResult, SpeechSegment, VadEvent};
-pub use options::{GraphOptimizationLevel, Mode, SessionOptions, VadOptions};
+pub use options::{SessionOptions, VadOptions};
 pub use vad::Vad;
+// `GraphOptimizationLevel` is re-exported from `ort` rather than defined locally —
+// matches silero's pattern of treating it as a foreign type and bridging to serde
+// via a private mirror enum (see options.rs).
+pub use ort::session::builder::GraphOptimizationLevel;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -183,81 +187,157 @@ impl FrameResult {
 
 `SpeechSegment` boundaries are absolute sample indices on the stream timeline. `range_usize()` slices the user's PCM `Vec<f32>` directly: `&pcm[segment.range_usize()]` is the human-speech window for that segment.
 
-### 3.5 `VadOptions`, `Mode`, `SessionOptions`
+### 3.5 `VadOptions` and `SessionOptions`
 
-`Mode` is **not stored** as a field on `VadOptions`. Upstream's `FireRedStreamVadConfig` defaults (threshold 0.5, `min_speech_frame` 8, `min_silence_frame` 20) don't correspond to any of the four mode presets — so `VadOptions::new()` reproduces upstream's defaults exactly, and `Mode` is purely an *action* that overwrites the three preset-controlled fields when applied.
+There is no `Mode` enum and no preset machinery. Upstream's "mode 0..3" presets just set three numeric fields (`speech_threshold`, `min_speech_frame`, `min_silence_frame`); we leave callers to set those via the `with_*` / `set_*` builders directly. Documentation will list the four upstream presets as suggested values for callers who want to mirror them.
+
+`GraphOptimizationLevel` is re-exported from `ort::session::builder` rather than redefined locally. This matches silero's pattern (foreign type, no `Default`/`Serialize`/`Deserialize` derive on the upstream enum, so we bridge serde via a private mirror enum and a `with = "..."` attribute).
+
+The serde idiom is silero's: derive `Serialize` / `Deserialize` cfg-gated, use `serde(default = "default_field_name", with = "humantime_serde")` per Duration field and `with = "humantime_serde::option"` per `Option<Duration>` field, and supply per-field `const fn default_*()` functions to back the `serde(default = ...)` attributes (so they round-trip through `{}`).
 
 ```rust
-pub struct VadOptions { /* private fields */ }
+use core::time::Duration;
+pub use ort::session::builder::GraphOptimizationLevel;
 
-impl VadOptions {
-    pub const fn new() -> Self;                       // upstream FireRedStreamVadConfig defaults (no preset)
-    pub const fn from_mode(mode: Mode) -> Self;       // upstream defaults overlaid with the preset's three values
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
 
-    // Mode is APPLIED, not stored. with_mode/set_mode overwrites the three
-    // preset-controlled fields (speech_threshold, min_speech_duration,
-    // min_silence_duration); other fields are untouched.
-    pub const fn with_mode(self, mode: Mode) -> Self;
-    pub fn set_mode(&mut self, mode: Mode);
+// ── private serde bridge for the foreign GraphOptimizationLevel enum ──
+#[cfg(feature = "serde")]
+mod graph_optimization_level {
+    use super::GraphOptimizationLevel;
+    use serde::*;
 
-    // For every other field, the trio: getter (const fn), setter, builder (const fn).
-    pub const fn smooth_window_size(&self) -> u32;
-    pub fn set_smooth_window_size(&mut self, size: u32);
-    pub const fn with_smooth_window_size(self, size: u32) -> Self;
+    #[derive(Debug, Default, Clone, Copy, Eq, PartialEq, Hash, Ord, PartialOrd, Serialize, Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    enum OptimizationLevel { Disable, Level1, Level2, #[default] Level3, All }
 
-    pub const fn speech_threshold(&self) -> f32;
-    pub fn set_speech_threshold(&mut self, t: f32);          // clamped to [0,1]
-    pub const fn with_speech_threshold(self, t: f32) -> Self;
+    impl From<GraphOptimizationLevel> for OptimizationLevel { /* one-arm-per-variant */ }
+    impl From<OptimizationLevel> for GraphOptimizationLevel { /* one-arm-per-variant */ }
 
-    pub const fn pad_start(&self) -> Duration;
-    pub fn set_pad_start(&mut self, d: Duration);
-    pub const fn with_pad_start(self, d: Duration) -> Self;
-
-    pub const fn min_speech_duration(&self) -> Duration;
-    pub fn set_min_speech_duration(&mut self, d: Duration);
-    pub const fn with_min_speech_duration(self, d: Duration) -> Self;
-
-    pub const fn max_speech_duration(&self) -> Option<Duration>;
-    pub fn set_max_speech_duration(&mut self, d: Option<Duration>);
-    pub const fn with_max_speech_duration(self, d: Option<Duration>) -> Self;
-    pub fn clear_max_speech_duration(&mut self);
-
-    pub const fn min_silence_duration(&self) -> Duration;
-    pub fn set_min_silence_duration(&mut self, d: Duration);
-    pub const fn with_min_silence_duration(self, d: Duration) -> Self;
-
-    pub const fn session_options(&self) -> &SessionOptions;
-    pub fn set_session_options(&mut self, opts: SessionOptions);
-    pub fn with_session_options(self, opts: SessionOptions) -> Self;
+    pub fn serialize<S: Serializer>(l: &GraphOptimizationLevel, s: S) -> Result<S::Ok, S::Error>;
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<GraphOptimizationLevel, D::Error>;
+    pub const fn default() -> GraphOptimizationLevel { GraphOptimizationLevel::Disable }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Mode {
-    VeryPermissive,    // upstream mode 0: threshold 0.3, min_speech_frame 8,  min_silence_frame 20
-    Permissive,        // upstream mode 1: threshold 0.5, min_speech_frame 10, min_silence_frame 15
-    Aggressive,        // upstream mode 2: threshold 0.7, min_speech_frame 15, min_silence_frame 10
-    VeryAggressive,    // upstream mode 3: threshold 0.9, min_speech_frame 20, min_silence_frame 5
-}
-// Mode does NOT implement Default — there is no default mode; VadOptions::new()
-// uses upstream's individual defaults instead, which differ from every preset.
+// ── const-fn defaults backing serde(default = "...") attributes ──
+const fn default_smooth_window_size() -> u32              { 5 }
+const fn default_speech_threshold() -> f32                { 0.5 }
+const fn default_pad_start() -> Duration                  { Duration::from_millis(50) }
+const fn default_min_speech_duration() -> Duration        { Duration::from_millis(80) }
+const fn default_min_silence_duration() -> Duration       { Duration::from_millis(200) }
+const fn default_max_speech_duration() -> Option<Duration> { Some(Duration::from_secs(20)) }
 
-pub struct SessionOptions { /* private */ }
+// ── SessionOptions ──
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct SessionOptions {
+    #[cfg_attr(feature = "serde",
+        serde(default = "graph_optimization_level::default", with = "graph_optimization_level"))]
+    optimization_level: GraphOptimizationLevel,
+}
+
+impl Default for SessionOptions { fn default() -> Self { Self::new() } }
 
 impl SessionOptions {
     pub const fn new() -> Self;
     pub const fn optimization_level(&self) -> GraphOptimizationLevel;
-    pub fn set_optimization_level(&mut self, level: GraphOptimizationLevel);
+    pub const fn set_optimization_level(&mut self, level: GraphOptimizationLevel) -> &mut Self;
     pub const fn with_optimization_level(self, level: GraphOptimizationLevel) -> Self;
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum GraphOptimizationLevel {
-    Disable, Level1, Level2,
-    #[default]
-    Level3,
+// ── VadOptions ──
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct VadOptions {
+    #[cfg_attr(feature = "serde", serde(default = "default_smooth_window_size"))]
+    smooth_window_size: u32,
+
+    #[cfg_attr(feature = "serde", serde(default = "default_speech_threshold"))]
+    speech_threshold: f32,
+
+    #[cfg_attr(feature = "serde",
+        serde(default = "default_pad_start", with = "humantime_serde"))]
+    pad_start: Duration,
+
+    #[cfg_attr(feature = "serde",
+        serde(default = "default_min_speech_duration", with = "humantime_serde"))]
+    min_speech_duration: Duration,
+
+    #[cfg_attr(feature = "serde",
+        serde(default = "default_min_silence_duration", with = "humantime_serde"))]
+    min_silence_duration: Duration,
+
+    #[cfg_attr(feature = "serde",
+        serde(default = "default_max_speech_duration", with = "humantime_serde::option"))]
+    max_speech_duration: Option<Duration>,
+
+    #[cfg_attr(feature = "serde", serde(default))]
+    session_options: SessionOptions,
 }
-// Maps to ort::GraphOptimizationLevel; bridge serde representation when feature is on.
+
+impl Default for VadOptions { fn default() -> Self { Self::new() } }
+
+impl VadOptions {
+    pub const fn new() -> Self;       // matches upstream FireRedStreamVadConfig defaults
+
+    // For every field, the trio: getter (const fn), with_* (const fn, takes mut self),
+    // and set_* (const fn, takes &mut self, returns &mut Self for chaining).
+    pub const fn smooth_window_size(&self) -> u32;
+    pub const fn with_smooth_window_size(mut self, size: u32) -> Self;       // calls set_smooth_window_size internally
+    pub const fn set_smooth_window_size(&mut self, size: u32) -> &mut Self;
+
+    pub const fn speech_threshold(&self) -> f32;
+    pub const fn with_speech_threshold(mut self, t: f32) -> Self;
+    pub const fn set_speech_threshold(&mut self, t: f32) -> &mut Self;       // clamped to [0,1] via sanitize_probability
+
+    pub const fn pad_start(&self) -> Duration;
+    pub const fn with_pad_start(mut self, d: Duration) -> Self;
+    pub const fn set_pad_start(&mut self, d: Duration) -> &mut Self;
+
+    pub const fn min_speech_duration(&self) -> Duration;
+    pub const fn with_min_speech_duration(mut self, d: Duration) -> Self;
+    pub const fn set_min_speech_duration(&mut self, d: Duration) -> &mut Self;
+
+    pub const fn max_speech_duration(&self) -> Option<Duration>;
+    pub const fn with_max_speech_duration(mut self, d: Duration) -> Self;
+    pub const fn set_max_speech_duration(&mut self, d: Duration) -> &mut Self;
+    pub const fn clear_max_speech_duration(mut self) -> Self;                // disables force-split
+
+    pub const fn min_silence_duration(&self) -> Duration;
+    pub const fn with_min_silence_duration(mut self, d: Duration) -> Self;
+    pub const fn set_min_silence_duration(&mut self, d: Duration) -> &mut Self;
+
+    pub const fn session_options(&self) -> &SessionOptions;
+    pub const fn with_session_options(mut self, opts: SessionOptions) -> Self;
+    pub const fn set_session_options(&mut self, opts: SessionOptions) -> &mut Self;
+
+    // Internal sample-domain getters used by the postprocessor (private; match silero's pattern).
+    pub(crate) const fn smooth_window_size_frames(&self) -> u32;
+    pub(crate) fn pad_start_frames(&self) -> u32;
+    pub(crate) fn min_speech_frames(&self) -> u32;
+    pub(crate) fn min_silence_frames(&self) -> u32;
+    pub(crate) fn max_speech_frames(&self) -> Option<u32>;
+}
 ```
+
+Helper:
+
+```rust
+pub(crate) const fn duration_to_frames(d: Duration) -> u32 {
+    // 10 ms = 1 frame  →  frames = ms / 10  =  (sec * 1000 + nanos / 1_000_000) / 10
+    let ms = d.as_millis();
+    let frames = ms / 10;
+    if frames > u32::MAX as u128 { u32::MAX } else { frames as u32 }
+}
+
+const fn sanitize_probability(value: f32) -> f32 {
+    // Same as silero's helper: NaN/inf → 0.0, otherwise clamp to [0,1].
+    if value.is_finite() { value.clamp(0.0, 1.0) } else { 0.0 }
+}
+```
+
+Hot accessors (`*_frames`, getters, setters) are decorated with `#[cfg_attr(not(tarpaulin), inline(always))]` to match silero's perf-hint pattern (the `tarpaulin` cfg disables inline-always under coverage so line counts attribute correctly).
 
 #### 3.5.1 Defaults (match upstream `FireRedStreamVadConfig`)
 
@@ -270,7 +350,21 @@ pub enum GraphOptimizationLevel {
 | `max_speech_frame` | 2000 | `Some(Duration::from_secs(20))` |
 | `min_silence_frame` | 20 | `Duration::from_millis(200)` |
 
-Mode, when applied via `with_mode(m)`, overwrites `speech_threshold`, `min_speech_duration`, and `min_silence_duration`. Subsequent `with_*` calls win (last-write).
+#### 3.5.2 Suggested preset values (no enum, just numbers callers can apply)
+
+Documentation will list upstream's four `set_mode` presets as copy-paste recipes:
+
+```rust
+// "Very permissive" (upstream mode 0)
+let opts = VadOptions::new()
+    .with_speech_threshold(0.3)
+    .with_min_speech_duration(Duration::from_millis(80))
+    .with_min_silence_duration(Duration::from_millis(200));
+
+// "Permissive" (upstream mode 1) — threshold 0.5, min_speech 100 ms, min_silence 150 ms
+// "Aggressive" (upstream mode 2) — threshold 0.7, min_speech 150 ms, min_silence 100 ms
+// "Very aggressive" (upstream mode 3) — threshold 0.9, min_speech 200 ms, min_silence 50 ms
+```
 
 ---
 
@@ -285,7 +379,7 @@ src/
   features.rs  pub(crate) MelFilterbank + Cmvn + FeatureExtractor (Kaldi-compatible, pure Rust, no dyn dispatch)
   inference.rs pub(crate) OrtRunner — wraps ort::Session, runs single inference, scratch buffers
   detector.rs  pub(crate) Postprocessor — smoothing window + 4-state machine
-  options.rs   pub VadOptions, pub Mode, pub GraphOptimizationLevel, pub SessionOptions
+  options.rs   pub VadOptions + pub SessionOptions; re-exports ort::session::builder::GraphOptimizationLevel
   event.rs     pub VadEvent, pub FrameResult, pub SpeechSegment
   error.rs     pub Error, pub Result
 ```
@@ -650,7 +744,7 @@ Mirrors silero's CI exactly (drops the template's sanitizers/Miri/Loom):
 | `max_speech_frame` (default 2000) — force-split via `hit_max_speech` re-arm | `stream_vad_postprocessor.py:122-150` | `VadOptions::max_speech_duration: Option<Duration>`; identical re-arm semantics |
 | `min_silence_frame` (default 20) — silence threshold to close in POSSIBLE_SILENCE | `stream_vad_postprocessor.py:138-161` | `VadOptions::min_silence_duration` |
 | 4-state machine (SILENCE / POSSIBLE_SPEECH / SPEECH / POSSIBLE_SILENCE) | `stream_vad_postprocessor.py:91-163` | private `enum VadState` in `detector.rs`; transitions translated 1:1 |
-| `set_mode(0..3)` presets | `stream_vad.py:142-161` | `pub enum Mode` + `with_mode(m)` applies preset values; identical numbers |
+| `set_mode(0..3)` presets | `stream_vad.py:142-161` | Documented as recipes (see §3.5.2) — callers apply via direct `VadOptions::with_*` calls. No `Mode` enum exposed |
 | Per-frame result fields | `stream_vad_postprocessor.py:8-17` | `pub struct FrameResult` with const-fn accessors; **frame index 0-based** |
 | `hit_max_speech` re-arm flag | `stream_vad_postprocessor.py:92-96` | preserved as `Postprocessor.hit_max_speech: bool` |
 | `last_speech_start_frame` / `last_speech_end_frame` clamping for `pad_start` | `stream_vad_postprocessor.py:54-55, 112-114, 131-133, 159-160` | preserved as `Option<u64>` slots in `Postprocessor` |
@@ -667,6 +761,8 @@ The **only** upstream knob not exposed: `chunk_max_frame` (offline-only batching
 - **`merge_silence_duration` knob** — speculatively added in an earlier draft; dropped because silence between speech runs IS the segmentation boundary the caller wants. Adding cross-silence merging would conflate "this speech run" with "this conversation" and is the caller's job if needed.
 - **Heap-allocated buffers vs stack arrays** — even small fixed-size buffers (`[f32; 400]`) are heap-allocated as `Vec<f32>` to keep async-runtime stacks well under their 64 KB–256 KB ceilings. Penalty is one allocation per `Vad` (lifetime-amortized).
 - **`Duration` for time-valued config vs raw frame counts** — `Duration` is the silero idiom; `humantime-serde` round-trips human-readable strings under the optional `serde` feature. Conversion to frames is centralized at the `Postprocessor` boundary.
+- **No `Mode` enum** — earlier drafts exposed a `Mode { VeryPermissive, Permissive, Aggressive, VeryAggressive }` enum that overlaid three numeric fields. Dropped because the presets are just three-field assignments — wrapping them in an enum complicates the API (extra `with_mode` method, "mode is applied not stored" caveats, parity edge cases) for no benefit. Callers configure `speech_threshold`, `min_speech_duration`, and `min_silence_duration` directly; documentation lists the four upstream presets verbatim as copy-paste recipes.
+- **Re-export `ort::session::builder::GraphOptimizationLevel` instead of redefining** — silero treats it as a foreign type and bridges to serde via a private mirror enum. We do the same: callers get the same vocabulary as everyone else using `ort` directly, and we don't have to maintain a parallel enum that drifts from upstream.
 
 ---
 
