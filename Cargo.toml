@@ -23,7 +23,7 @@ tensorrt = ["ort/tensorrt"]
 openvino = ["ort/openvino"]
 
 [dependencies]
-ort = { version = "=2.0.0-rc.12", default-features = false, features = ["std", "ndarray"] }
+ort = "=2.0.0-rc.12"
 thiserror = "2"
 rustfft = "6"
 

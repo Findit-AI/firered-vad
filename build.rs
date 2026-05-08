@@ -1,3 +1,5 @@
+//! Build script for firered-vad.
+
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
 
