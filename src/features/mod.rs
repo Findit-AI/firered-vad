@@ -24,6 +24,108 @@ mod arch;
 mod dispatch;
 mod scalar;
 
+// Bench-only thunks: `benches/kernels.rs` calls scalar and NEON
+// kernels directly so the criterion microbench can compare each path
+// without going through the dispatcher's runtime feature check. The
+// real kernels are `pub(crate)` and can't be re-exported as `pub`,
+// so we wrap them in thin `pub fn` thunks under this feature flag.
+// The `_bench-internals` cargo feature gates the entire module.
+#[cfg(feature = "_bench-internals")]
+#[doc(hidden)]
+pub mod __bench_internals {
+  //! Internal — do not depend on this. The shape of these wrappers
+  //! is not part of the crate's public API and may change in any
+  //! release without notice.
+
+  // The crate-internal constants are `pub(crate)` and can't be re-
+  // exported. Mirror their values here so benches can drive the
+  // kernels with the right buffer sizes.
+  pub const NUM_MEL_BINS: usize = super::NUM_MEL_BINS;
+  pub const FRAME_LENGTH_SAMPLES: usize = super::FRAME_LENGTH_SAMPLES;
+  pub const FFT_SIZE: usize = super::FFT_SIZE;
+  pub const FFT_BINS: usize = super::FFT_BINS;
+  pub const PRE_EMPHASIS: f32 = super::PRE_EMPHASIS;
+  pub const LOG_FLOOR: f32 = super::LOG_FLOOR;
+  pub const INT16_SCALE: f32 = super::INT16_SCALE;
+
+  /// Scalar kernel thunks. Each delegates to the matching
+  /// `pub(crate) fn` in [`super::scalar`].
+  pub mod scalar {
+    use super::super::scalar as inner;
+
+    #[inline]
+    pub fn pcm_scale_extend(pcm: &[f32], out: &mut [f32]) {
+      inner::pcm_scale_extend(pcm, out);
+    }
+    #[inline]
+    pub fn dc_remove(window: &[f32], out: &mut [f32]) {
+      inner::dc_remove(window, out);
+    }
+    #[inline]
+    pub fn pre_emphasis(samples: &mut [f32]) {
+      inner::pre_emphasis(samples);
+    }
+    #[inline]
+    pub fn window_apply(samples: &mut [f32], window: &[f32]) {
+      inner::window_apply(samples, window);
+    }
+    #[inline]
+    pub fn power_spectrum(
+      complex: &[rustfft::num_complex::Complex<f32>],
+      out: &mut [f32],
+    ) {
+      inner::power_spectrum(complex, out);
+    }
+    #[inline]
+    pub fn cmvn_apply(feature: &mut [f32], means: &[f32], istd: &[f32]) {
+      inner::cmvn_apply(feature, means, istd);
+    }
+    #[inline]
+    pub fn mel_dot_log(power_slice: &[f32], weights: &[f32]) -> f32 {
+      inner::mel_dot_log(power_slice, weights)
+    }
+  }
+
+  /// aarch64 NEON kernel thunks. Each delegates to the matching
+  /// `pub(crate) unsafe fn` in [`super::arch::neon`].
+  ///
+  /// # Safety
+  /// Caller must ensure NEON is available on the host (`is_aarch64_feature_detected!("neon")`).
+  #[cfg(target_arch = "aarch64")]
+  #[allow(unsafe_code)]
+  pub mod neon {
+    use super::super::arch::neon as inner;
+
+    #[inline]
+    pub unsafe fn pcm_scale_extend(pcm: &[f32], out: &mut [f32]) {
+      unsafe { inner::pcm_scale_extend(pcm, out) }
+    }
+    #[inline]
+    pub unsafe fn dc_remove(window: &[f32], out: &mut [f32]) {
+      unsafe { inner::dc_remove(window, out) }
+    }
+    #[inline]
+    pub unsafe fn window_apply(samples: &mut [f32], window: &[f32]) {
+      unsafe { inner::window_apply(samples, window) }
+    }
+    #[inline]
+    pub unsafe fn power_spectrum(
+      complex: &[rustfft::num_complex::Complex<f32>],
+      out: &mut [f32],
+    ) {
+      unsafe { inner::power_spectrum(complex, out) }
+    }
+    #[inline]
+    pub unsafe fn cmvn_apply(feature: &mut [f32], means: &[f32], istd: &[f32]) {
+      unsafe { inner::cmvn_apply(feature, means, istd) }
+    }
+    #[inline]
+    pub unsafe fn mel_dot_log(power_slice: &[f32], weights: &[f32]) -> f32 {
+      unsafe { inner::mel_dot_log(power_slice, weights) }
+    }
+  }
+}
+
 use crate::error::{Error, Result};
 
 /// Number of Mel filterbank bins the model expects.

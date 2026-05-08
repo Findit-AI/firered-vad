@@ -19,6 +19,10 @@ serde = ["dep:serde", "dep:humantime-serde"]
 # diff them against upstream kaldi-native-fbank. Underscore prefix marks
 # this as a non-stable, harness-only knob; never enable in production.
 _debug-features = []
+# Internal: re-exports the `dispatch` and `arch::neon` kernels publicly
+# so `benches/kernels.rs` can microbench scalar vs NEON paths directly.
+# Enabled automatically by the `kernels` bench via `required-features`.
+_bench-internals = []
 coreml = ["ort/coreml"]
 directml = ["ort/directml"]
 cuda = ["ort/cuda"]
@@ -34,9 +38,47 @@ rustfft = "6"
 serde = { version = "1", optional = true, features = ["derive"] }
 humantime-serde = { version = "1", optional = true }
 
+[lib]
+# `cargo bench` without this setting builds and runs the lib's `#[test]`
+# harness alongside the real bench targets; that harness rejects
+# `--output-format bencher` and breaks the criterion runner. We don't
+# have any `#[bench]` attributes in the lib anyway, so opt out.
+bench = false
+
 [dev-dependencies]
 hound = "3"
 serde_json = "1"
+
+# Criterion pulls in rayon and gettimeofday-style clocks that don't
+# build cleanly for `wasm32-*` targets. Benches don't run on wasm
+# anyway (timing infrastructure isn't exposed under wasi), so gate
+# the dep to non-wasm hosts. Mirrors colconv's pattern.
+[target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
+criterion = { version = "0.5", default-features = false, features = ["html_reports"] }
+
+[profile.bench]
+opt-level = 3
+debug = false
+codegen-units = 1
+lto = "thin"
+incremental = false
+debug-assertions = false
+overflow-checks = false
+
+[[bench]]
+name = "kernels"
+harness = false
+required-features = ["bundled", "_bench-internals"]
+
+[[bench]]
+name = "feature_extract"
+harness = false
+required-features = ["bundled", "_debug-features"]
+
+[[bench]]
+name = "push_samples"
+harness = false
+required-features = ["bundled"]
 
 [lints]
 workspace = true
@@ -66,8 +108,4 @@ required-features = ["bundled"]
 
 [[example]]
 name = "detect_file"
-required-features = ["bundled"]
-
-[[example]]
-name = "benchmark"
 required-features = ["bundled"]

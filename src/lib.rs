@@ -29,3 +29,12 @@ pub use vad::{BUNDLED_CMVN, BUNDLED_MODEL};
 
 /// Crate version (matches `CARGO_PKG_VERSION`).
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Internal — do not depend on this. Re-exports the scalar and NEON
+/// kernels under `src/features/` so `benches/kernels.rs` can call them
+/// directly without going through the runtime dispatcher. The shape
+/// is not part of the crate's public API and may change in any
+/// release without notice.
+#[cfg(feature = "_bench-internals")]
+#[doc(hidden)]
+pub use features::__bench_internals;
