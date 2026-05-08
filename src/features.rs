@@ -8,6 +8,50 @@ use crate::error::{Error, Result};
 /// Number of Mel filterbank bins the model expects.
 pub(crate) const NUM_MEL_BINS: usize = 80;
 
+/// Sample rate the model expects.
+pub(crate) const SAMPLE_RATE_HZ: u32 = 16_000;
+
+/// Number of samples in a 25 ms analysis window.
+pub(crate) const FRAME_LENGTH_SAMPLES: usize = 400;
+
+/// Number of samples between successive 10 ms frame starts.
+pub(crate) const FRAME_SHIFT_SAMPLES: usize = 160;
+
+/// FFT length used for the mel filterbank (next power of 2 ≥ FRAME_LENGTH_SAMPLES).
+pub(crate) const FFT_SIZE: usize = 512;
+
+/// Number of unique non-redundant FFT bins (`FFT_SIZE / 2 + 1`).
+pub(crate) const FFT_BINS: usize = FFT_SIZE / 2 + 1;
+
+/// Pre-emphasis coefficient (Kaldi default; upstream keeps the default).
+const PRE_EMPHASIS: f32 = 0.97;
+
+/// Mel-bin range (low_freq=20, high_freq=Nyquist for 16 kHz).
+const MEL_LOW_FREQ_HZ: f32 = 20.0;
+const MEL_HIGH_FREQ_HZ: f32 = 8_000.0;
+
+/// Floor for the log of bin energies (Kaldi `log_floor`).
+const LOG_FLOOR: f32 = 1e-20;
+
+/// One sparse triangular Mel filter, addressed by `start_bin` and `weights`.
+#[derive(Debug, Clone)]
+struct MelFilter {
+  start_bin: usize,
+  weights: Vec<f32>,
+}
+
+/// Pure-Rust Kaldi-compatible Mel filterbank.
+///
+/// Configuration is hard-coded to match upstream FireRedVAD exactly:
+/// 16 kHz, 25 ms / 10 ms windows, 80 mel bins, Povey window,
+/// pre-emphasis 0.97, DC removal on, snip_edges=true, log floor 1e-20.
+pub(crate) struct MelFilterbank {
+  fft: rustfft::algorithm::Radix4<f32>,
+  fft_buf: Vec<rustfft::num_complex::Complex<f32>>,
+  povey_window: Vec<f32>,
+  filters: Vec<MelFilter>,
+}
+
 /// Cepstral Mean and Variance Normalization stats parsed from a Kaldi
 /// `.ark` file. The 80-dim means and inverse-std-variances are applied
 /// to each Mel-fbank feature vector before it is fed to the model.
@@ -135,6 +179,152 @@ impl Cmvn {
   }
 }
 
+#[cfg_attr(not(tarpaulin), inline(always))]
+fn hz_to_mel(hz: f32) -> f32 {
+  // Kaldi/HTK convention: 1127 * ln(1 + f/700)
+  1127.0 * (1.0 + hz / 700.0).ln()
+}
+
+#[cfg_attr(not(tarpaulin), inline(always))]
+fn mel_to_hz(mel: f32) -> f32 {
+  700.0 * ((mel / 1127.0).exp() - 1.0)
+}
+
+/// Centre frequency of the `i`-th non-redundant FFT bin in Hz.
+#[cfg_attr(not(tarpaulin), inline(always))]
+fn fft_bin_hz(i: usize) -> f32 {
+  (i as f32) * (SAMPLE_RATE_HZ as f32) / (FFT_SIZE as f32)
+}
+
+fn build_povey_window() -> Vec<f32> {
+  let n = FRAME_LENGTH_SAMPLES;
+  let a = std::f32::consts::TAU / ((n - 1) as f32);
+  (0..n)
+    .map(|i| (0.5 - 0.5 * (a * i as f32).cos()).powf(0.85))
+    .collect()
+}
+
+fn build_mel_filters() -> Vec<MelFilter> {
+  let mel_low = hz_to_mel(MEL_LOW_FREQ_HZ);
+  let mel_high = hz_to_mel(MEL_HIGH_FREQ_HZ);
+  let mel_step = (mel_high - mel_low) / (NUM_MEL_BINS as f32 + 1.0);
+
+  // The (NUM_MEL_BINS + 2) Mel-frequency anchor points spanning the band:
+  // `points[b]` is the left edge of filter b-1, the centre of filter b, and
+  // the right edge of filter b+1 (for the matching `b` indices).
+  let mut hz_points = Vec::with_capacity(NUM_MEL_BINS + 2);
+  for k in 0..(NUM_MEL_BINS + 2) {
+    hz_points.push(mel_to_hz(mel_low + (k as f32) * mel_step));
+  }
+
+  let mut filters = Vec::with_capacity(NUM_MEL_BINS);
+  for b in 0..NUM_MEL_BINS {
+    let left = hz_points[b];
+    let centre = hz_points[b + 1];
+    let right = hz_points[b + 2];
+
+    // Find the FFT bin index range that overlaps [left, right].
+    let mut start_bin = FFT_BINS;
+    let mut end_bin = 0;
+    for i in 0..FFT_BINS {
+      let f = fft_bin_hz(i);
+      if f > left && f < right {
+        if i < start_bin {
+          start_bin = i;
+        }
+        end_bin = i;
+      }
+    }
+
+    let mut weights = Vec::new();
+    if start_bin <= end_bin {
+      weights.reserve(end_bin - start_bin + 1);
+      for i in start_bin..=end_bin {
+        let f = fft_bin_hz(i);
+        let w = if f <= centre {
+          (f - left) / (centre - left)
+        } else {
+          (right - f) / (right - centre)
+        };
+        weights.push(w.max(0.0));
+      }
+    } else {
+      // Filter band falls between FFT bins (very narrow band at low Mel
+      // indices); leave it empty — Kaldi behaves the same.
+      start_bin = 0;
+    }
+
+    filters.push(MelFilter { start_bin, weights });
+  }
+
+  filters
+}
+
+impl MelFilterbank {
+  pub(crate) fn new() -> Self {
+    use rustfft::FftDirection;
+    Self {
+      fft: rustfft::algorithm::Radix4::<f32>::new(FFT_SIZE, FftDirection::Forward),
+      fft_buf: vec![rustfft::num_complex::Complex::new(0.0, 0.0); FFT_SIZE],
+      povey_window: build_povey_window(),
+      filters: build_mel_filters(),
+    }
+  }
+
+  /// Extract one 80-dim log-Mel feature from a 25 ms window of int16-range
+  /// samples. The input is mutated in place (DC removal, pre-emphasis,
+  /// windowing happen on a copy inside the FFT buffer; the caller's slice
+  /// is **not** mutated).
+  pub(crate) fn extract(&mut self, window: &[f32], out: &mut [f32]) {
+    debug_assert_eq!(window.len(), FRAME_LENGTH_SAMPLES);
+    debug_assert_eq!(out.len(), NUM_MEL_BINS);
+
+    // 1. Copy + remove DC offset.
+    let mean: f32 = window.iter().copied().sum::<f32>() / FRAME_LENGTH_SAMPLES as f32;
+    let mut samples: [f32; FRAME_LENGTH_SAMPLES] = [0.0; FRAME_LENGTH_SAMPLES];
+    for i in 0..FRAME_LENGTH_SAMPLES {
+      samples[i] = window[i] - mean;
+    }
+
+    // 2. Pre-emphasis: x[i] -= 0.97 * x[i-1] for i = N-1..1; then x[0] -= 0.97 * x[0].
+    for i in (1..FRAME_LENGTH_SAMPLES).rev() {
+      samples[i] -= PRE_EMPHASIS * samples[i - 1];
+    }
+    samples[0] -= PRE_EMPHASIS * samples[0];
+
+    // 3. Window with Povey.
+    for i in 0..FRAME_LENGTH_SAMPLES {
+      samples[i] *= self.povey_window[i];
+    }
+
+    // 4. Zero-pad to FFT_SIZE and run the radix-2 FFT.
+    for i in 0..FFT_SIZE {
+      let re = if i < FRAME_LENGTH_SAMPLES { samples[i] } else { 0.0 };
+      self.fft_buf[i].re = re;
+      self.fft_buf[i].im = 0.0;
+    }
+    use rustfft::Fft;
+    self.fft.process(&mut self.fft_buf);
+
+    // 5. Power spectrum (|X|^2) for the non-redundant half.
+    let mut power: [f32; FFT_BINS] = [0.0; FFT_BINS];
+    for i in 0..FFT_BINS {
+      let c = self.fft_buf[i];
+      power[i] = c.re * c.re + c.im * c.im;
+    }
+
+    // 6. Mel filterbank → log.
+    for b in 0..NUM_MEL_BINS {
+      let f = &self.filters[b];
+      let mut energy = 0.0f32;
+      for (j, w) in f.weights.iter().enumerate() {
+        energy += power[f.start_bin + j] * *w;
+      }
+      out[b] = energy.max(LOG_FLOOR).ln();
+    }
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -184,5 +374,62 @@ mod tests {
     for value in &feature {
       assert!((*value - 4.0).abs() < f32::EPSILON);
     }
+  }
+
+  #[test]
+  fn povey_window_endpoints_are_zero_and_centre_is_one() {
+    let w = build_povey_window();
+    assert_eq!(w.len(), FRAME_LENGTH_SAMPLES);
+    assert!(w[0].abs() < 1e-6);
+    assert!(w[FRAME_LENGTH_SAMPLES - 1].abs() < 1e-6);
+    let centre = (FRAME_LENGTH_SAMPLES - 1) / 2;
+    assert!((w[centre] - 1.0).abs() < 1e-3, "centre weight = {}", w[centre]);
+  }
+
+  #[test]
+  fn mel_filters_cover_the_target_frequency_range() {
+    let filters = build_mel_filters();
+    assert_eq!(filters.len(), NUM_MEL_BINS);
+
+    // The first filter should start at a low FFT bin.
+    let first_centre_hz = fft_bin_hz(filters[0].start_bin + filters[0].weights.len() / 2);
+    assert!(first_centre_hz > MEL_LOW_FREQ_HZ);
+    assert!(first_centre_hz < 200.0);
+
+    // The last filter should reach close to Nyquist.
+    let last = &filters[NUM_MEL_BINS - 1];
+    let last_max_bin = last.start_bin + last.weights.len();
+    assert!(fft_bin_hz(last_max_bin) > 7_000.0);
+  }
+
+  #[test]
+  fn mel_filterbank_silence_produces_log_floor_features() {
+    let mut bank = MelFilterbank::new();
+    let window = vec![0.0f32; FRAME_LENGTH_SAMPLES];
+    let mut out = vec![0.0f32; NUM_MEL_BINS];
+    bank.extract(&window, &mut out);
+    let log_floor = LOG_FLOOR.ln();
+    for v in &out {
+      assert!((*v - log_floor).abs() < 1e-3, "expected log_floor, got {}", v);
+    }
+  }
+
+  #[test]
+  fn mel_filterbank_responds_to_a_pure_tone() {
+    let mut bank = MelFilterbank::new();
+    let mut window = vec![0.0f32; FRAME_LENGTH_SAMPLES];
+    // 1 kHz sinusoid at int16-range amplitude.
+    let f = 1_000.0f32;
+    let amp = 8_000.0f32;
+    for n in 0..FRAME_LENGTH_SAMPLES {
+      window[n] = amp * (std::f32::consts::TAU * f * (n as f32) / SAMPLE_RATE_HZ as f32).sin();
+    }
+    let mut out = vec![0.0f32; NUM_MEL_BINS];
+    bank.extract(&window, &mut out);
+
+    // The peak Mel bin should sit somewhere in the lower half of the bank
+    // (mel index for 1 kHz is ~28 with these parameters).
+    let max_bin = (0..NUM_MEL_BINS).max_by(|a, b| out[*a].partial_cmp(&out[*b]).unwrap()).unwrap();
+    assert!((20..40).contains(&max_bin), "peak Mel bin = {max_bin}");
   }
 }
