@@ -1,48 +1,46 @@
 [package]
-name = "template-rs"
-version = "0.0.0"
-edition = "2021"
-repository = "https://github.com/al8n/template-rs"
-homepage = "https://github.com/al8n/template-rs"
-documentation = "https://docs.rs/template-rs"
-description = "A template for creating Rust open-source repo on GitHub"
+name = "firered-vad"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
 license = "MIT OR Apache-2.0"
-rust-version = "1.73"
-
-[[bench]]
-path = "benches/foo.rs"
-name = "foo"
-harness = false
+description = "Streaming Voice Activity Detection wrapping the FireRedVAD model via ONNX Runtime"
+repository = "https://github.com/uqio/firered-vad"
+documentation = "https://docs.rs/firered-vad"
+readme = "README.md"
+keywords = ["vad", "voice-activity-detection", "fireredvad", "speech", "audio"]
+categories = ["multimedia::audio", "science"]
 
 [features]
-default = ["std"]
-alloc = []
-std = []
+default = ["bundled"]
+bundled = []
+serde = ["dep:serde", "dep:humantime-serde"]
+coreml = ["ort/coreml"]
+directml = ["ort/directml"]
+cuda = ["ort/cuda"]
+rocm = ["ort/rocm"]
+tensorrt = ["ort/tensorrt"]
+openvino = ["ort/openvino"]
 
 [dependencies]
+ort = { version = "=2.0.0-rc.12", default-features = false, features = ["std", "ndarray"] }
+thiserror = "2"
+rustfft = "6"
+
+serde = { version = "1", optional = true, features = ["derive"] }
+humantime-serde = { version = "1", optional = true }
 
 [dev-dependencies]
-criterion = "0.8"
-tempfile = "3"
+hound = "3"
+serde_json = "1"
 
-[profile.bench]
-opt-level = 3
-debug = false
-codegen-units = 1
-lto = 'thin'
-incremental = false
-debug-assertions = false
-overflow-checks = false
-rpath = false
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "deny"
+rust_2018_idioms = "warn"
+single_use_lifetimes = "warn"
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(tarpaulin)"] }
 
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
-
-[lints.rust]
-rust_2018_idioms = "warn"
-single_use_lifetimes = "warn"
-unexpected_cfgs = { level = "warn", check-cfg = [
-  'cfg(all_tests)',
-  'cfg(tarpaulin)',
-] }
