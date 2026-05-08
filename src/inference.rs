@@ -70,9 +70,7 @@ impl OrtRunner {
 
   /// Reset the per-stream cache to zero. Scratch buffers are kept.
   pub(crate) fn reset(&mut self) {
-    for v in &mut self.caches {
-      *v = 0.0;
-    }
+    self.caches.fill(0.0);
   }
 
   /// Number of frames currently buffered in `feat_scratch`. Always a

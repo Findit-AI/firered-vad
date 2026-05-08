@@ -2,7 +2,14 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(docsrs, allow(unused_attributes))]
 #![deny(missing_docs)]
-#![forbid(unsafe_code)]
+// `forbid` would block every `unsafe` block, including the
+// `core::arch::aarch64::*` NEON intrinsics under `src/features/arch/`
+// which are inherently `unsafe fn` in the standard library. We `deny`
+// instead and individual SIMD modules opt back in with
+// `#![allow(unsafe_code)]` (see `src/features/arch/neon.rs`). Every
+// remaining call site outside the arch modules is forbidden by this
+// blanket rule.
+#![deny(unsafe_code)]
 
 mod detector;
 mod error;

@@ -145,25 +145,44 @@ impl Vad {
   /// segments without processing new PCM — useful when a single push
   /// closes more than one segment (rare but possible at force-split).
   pub fn push_samples(&mut self, pcm: &[f32]) -> Result<Option<SpeechSegment>> {
+    // Destructure self into disjoint mutable borrows of each field so the
+    // borrow checker can see the inference output (`&[f32]` borrowed from
+    // `runner`) and the per-frame mutations on `detector`/`recent_frames`/
+    // `pending_segments` as non-overlapping. Without this split we'd need
+    // to `to_vec()` the prob slice every push, which allocated `T*4` bytes
+    // per call on the hot path.
+    let Self {
+      runner,
+      features,
+      detector,
+      pending_segments,
+      feature_scratch,
+      recent_frames,
+      ..
+    } = self;
+
     if !pcm.is_empty() {
-      self.recent_frames.clear();
-      self.features.push_pcm(pcm);
-      while self.features.has_full_window() {
-        self.features.extract_one(&mut self.feature_scratch);
-        self.runner.push_feature(&self.feature_scratch);
+      recent_frames.clear();
+      features.push_pcm(pcm);
+      while features.has_full_window() {
+        features.extract_one(feature_scratch);
+        runner.push_feature(feature_scratch);
       }
-      if self.runner.pending_feature_frames() > 0 {
-        let probs: Vec<f32> = self.runner.infer()?.to_vec();
-        for prob in probs {
-          let (frame_result, segment) = self.detector.push_probability(prob);
-          self.recent_frames.push(frame_result);
+      if runner.pending_feature_frames() > 0 {
+        // `probs` borrows `runner` immutably for the duration of the loop;
+        // `detector`, `recent_frames`, `pending_segments` are disjoint
+        // field borrows so we can mutate them without conflict.
+        let probs = runner.infer()?;
+        for &prob in probs {
+          let (frame_result, segment) = detector.push_probability(prob);
+          recent_frames.push(frame_result);
           if let Some(s) = segment {
-            self.pending_segments.push_back(s);
+            pending_segments.push_back(s);
           }
         }
       }
     }
-    Ok(self.pending_segments.pop_front())
+    Ok(pending_segments.pop_front())
   }
 
   /// Mark end-of-stream. Returns the trailing segment if one was open, or

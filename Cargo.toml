@@ -45,7 +45,16 @@ workspace = true
 missing_docs = "deny"
 rust_2018_idioms = { level = "warn", priority = -1 }
 single_use_lifetimes = "warn"
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(tarpaulin)"] }
+unexpected_cfgs = { level = "warn", check-cfg = [
+  "cfg(tarpaulin)",
+  # Force the SIMD dispatcher in `src/features/dispatch.rs` to fall
+  # through to the scalar reference. Set via
+  # `RUSTFLAGS='--cfg firered_vad_force_scalar'` in CI / coverage runs
+  # so the scalar baseline gets exercised on machines (aarch64) that
+  # would otherwise always pick NEON. Mirrors colconv's
+  # `colconv_force_scalar` knob.
+  "cfg(firered_vad_force_scalar)",
+] }
 
 [package.metadata.docs.rs]
 all-features = true
@@ -57,4 +66,8 @@ required-features = ["bundled"]
 
 [[example]]
 name = "detect_file"
+required-features = ["bundled"]
+
+[[example]]
+name = "benchmark"
 required-features = ["bundled"]

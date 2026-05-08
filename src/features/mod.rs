@@ -2,6 +2,27 @@
 //!
 //! All public types here are `pub(crate)` — feature extraction is an
 //! implementation detail of [`crate::Vad`].
+//!
+//! # Module layout (mirrors `colconv-be-tier10b/src/row/`)
+//!
+//! - [`scalar`] — reference implementations of every inner-loop kernel.
+//!   Always compiled, used as the baseline and the SIMD remainder
+//!   (tail) handler.
+//! - [`arch`] — architecture-specific SIMD kernels gated on
+//!   `target_arch`. Today only `aarch64::neon` is implemented; x86_64
+//!   and wasm32 fall through to scalar via the dispatcher and are easy
+//!   drop-in additions.
+//! - [`dispatch`] — runtime selection helpers + `*_available()`
+//!   feature-detection wrappers. Called from `MelFilterbank::extract`
+//!   and `FeatureExtractor::push_pcm` once per inner-loop kernel.
+//!
+//! Setting `RUSTFLAGS='--cfg firered_vad_force_scalar'` short-circuits
+//! every `*_available()` to `false` so CI / parity runs can exercise
+//! the scalar baseline on machines that would otherwise pick NEON.
+
+mod arch;
+mod dispatch;
+mod scalar;
 
 use crate::error::{Error, Result};
 
@@ -24,7 +45,7 @@ pub(crate) const FFT_SIZE: usize = 512;
 pub(crate) const FFT_BINS: usize = FFT_SIZE / 2 + 1;
 
 /// Pre-emphasis coefficient (Kaldi default; upstream keeps the default).
-const PRE_EMPHASIS: f32 = 0.97;
+pub(crate) const PRE_EMPHASIS: f32 = 0.97;
 
 /// Mel-bin range (low_freq=20, high_freq=Nyquist for 16 kHz).
 const MEL_LOW_FREQ_HZ: f32 = 20.0;
@@ -35,7 +56,19 @@ const MEL_HIGH_FREQ_HZ: f32 = 8_000.0;
 /// `FbankComputer::Compute`). Note: differs from Kaldi-proper's
 /// hand-tuned 1e-20 — `kaldi-native-fbank` rolled it back to f32::EPSILON,
 /// which is what upstream FireRedVAD's pipeline actually uses.
-const LOG_FLOOR: f32 = f32::EPSILON;
+pub(crate) const LOG_FLOOR: f32 = f32::EPSILON;
+
+/// Scale factor applied to incoming PCM before feature extraction.
+///
+/// Upstream Python reads WAVs as `int16` and feeds raw int16-range
+/// values to `kaldi_native_fbank`. We accept f32 in `[-1.0, 1.0]` from
+/// callers and multiply by this constant on the way in to keep the
+/// downstream filterbank values numerically identical to upstream.
+pub(crate) const INT16_SCALE: f32 = 32_768.0;
+
+/// Same value as `INT16_SCALE`, kept under a separate name for the
+/// SIMD kernels that need an explicit `f32` literal at the call site.
+pub(crate) const INT16_SCALE_VEC: f32 = INT16_SCALE;
 
 /// One sparse triangular Mel filter, addressed by `start_bin` and `weights`.
 #[derive(Debug, Clone)]
@@ -48,12 +81,20 @@ struct MelFilter {
 ///
 /// Configuration is hard-coded to match upstream FireRedVAD exactly:
 /// 16 kHz, 25 ms / 10 ms windows, 80 mel bins, Povey window,
-/// pre-emphasis 0.97, DC removal on, snip_edges=true, log floor 1e-20.
+/// pre-emphasis 0.97, DC removal on, snip_edges=true, log floor f32::EPSILON.
 pub(crate) struct MelFilterbank {
   fft: rustfft::algorithm::Radix4<f32>,
   fft_buf: Vec<rustfft::num_complex::Complex<f32>>,
   povey_window: Vec<f32>,
   filters: Vec<MelFilter>,
+  /// Persistent scratch for the DC-removed / pre-emphasized / windowed
+  /// 25 ms frame. Length `FRAME_LENGTH_SAMPLES`. Replaces a 1.6 KB
+  /// stack array that was previously re-zeroed every call.
+  samples_scratch: Vec<f32>,
+  /// Persistent scratch for the power spectrum (`|X|^2` over the
+  /// non-redundant FFT half). Length `FFT_BINS`. Replaces a 1 KB
+  /// stack array that was previously re-zeroed every call.
+  power_scratch: Vec<f32>,
 }
 
 impl std::fmt::Debug for MelFilterbank {
@@ -200,13 +241,11 @@ impl Cmvn {
     })
   }
 
-  /// Apply CMVN in place to one 80-dim feature vector.
+  /// Apply CMVN in place to one 80-dim feature vector. Dispatches to
+  /// the SIMD backend on aarch64; scalar otherwise.
   #[cfg_attr(not(tarpaulin), inline(always))]
   pub(crate) fn apply(&self, feature: &mut [f32]) {
-    debug_assert_eq!(feature.len(), NUM_MEL_BINS);
-    for (d, f) in feature.iter_mut().enumerate() {
-      *f = (*f - self.means[d]) * self.inverse_std_variances[d];
-    }
+    dispatch::cmvn_apply(feature, &self.means, &self.inverse_std_variances);
   }
 }
 
@@ -314,72 +353,53 @@ impl MelFilterbank {
       fft_buf: vec![rustfft::num_complex::Complex::new(0.0, 0.0); FFT_SIZE],
       povey_window: build_povey_window(),
       filters: build_mel_filters(),
+      samples_scratch: vec![0.0; FRAME_LENGTH_SAMPLES],
+      power_scratch: vec![0.0; FFT_BINS],
     }
   }
 
   /// Extract one 80-dim log-Mel feature from a 25 ms window of int16-range
-  /// samples. The input is mutated in place (DC removal, pre-emphasis,
-  /// windowing happen on a copy inside the FFT buffer; the caller's slice
-  /// is **not** mutated).
+  /// samples. The caller's slice is **not** mutated; intermediate
+  /// transformations live in `samples_scratch` and `power_scratch`.
+  ///
+  /// Each inner-loop step delegates to [`dispatch`], which picks the
+  /// best available backend (NEON when on aarch64, scalar otherwise).
   pub(crate) fn extract(&mut self, window: &[f32], out: &mut [f32]) {
     debug_assert_eq!(window.len(), FRAME_LENGTH_SAMPLES);
     debug_assert_eq!(out.len(), NUM_MEL_BINS);
 
-    // 1. Copy + remove DC offset.
-    let mean: f32 = window.iter().copied().sum::<f32>() / FRAME_LENGTH_SAMPLES as f32;
-    let mut samples: [f32; FRAME_LENGTH_SAMPLES] = [0.0; FRAME_LENGTH_SAMPLES];
-    for i in 0..FRAME_LENGTH_SAMPLES {
-      samples[i] = window[i] - mean;
-    }
+    // 1. DC removal into samples_scratch.
+    dispatch::dc_remove(window, &mut self.samples_scratch);
 
-    // 2. Pre-emphasis: x[i] -= 0.97 * x[i-1] for i = N-1..1; then x[0] -= 0.97 * x[0].
-    for i in (1..FRAME_LENGTH_SAMPLES).rev() {
-      samples[i] -= PRE_EMPHASIS * samples[i - 1];
-    }
-    samples[0] -= PRE_EMPHASIS * samples[0];
+    // 2. Pre-emphasis (sequential, scalar always).
+    dispatch::pre_emphasis(&mut self.samples_scratch);
 
-    // 3. Window with Povey.
-    for (s, w) in samples.iter_mut().zip(self.povey_window.iter()) {
-      *s *= w;
-    }
+    // 3. Apply Povey window.
+    dispatch::window_apply(&mut self.samples_scratch, &self.povey_window);
 
-    // 4. Zero-pad to FFT_SIZE and run the radix-2 FFT.
-    for (i, buf) in self.fft_buf.iter_mut().enumerate() {
-      let re = if i < FRAME_LENGTH_SAMPLES {
-        samples[i]
-      } else {
-        0.0
-      };
-      buf.re = re;
+    // 4. Copy windowed samples into fft_buf real parts; zero out the
+    //    [400..512] tail and all imaginary parts. Then FFT in place.
+    for (buf, &s) in self.fft_buf.iter_mut().zip(self.samples_scratch.iter()) {
+      buf.re = s;
+      buf.im = 0.0;
+    }
+    for buf in &mut self.fft_buf[FRAME_LENGTH_SAMPLES..] {
+      buf.re = 0.0;
       buf.im = 0.0;
     }
     use rustfft::Fft;
     self.fft.process(&mut self.fft_buf);
 
-    // 5. Power spectrum (|X|^2) for the non-redundant half.
-    let mut power: [f32; FFT_BINS] = [0.0; FFT_BINS];
-    for (p, c) in power.iter_mut().zip(self.fft_buf.iter()) {
-      *p = c.re * c.re + c.im * c.im;
-    }
+    // 5. Power spectrum (|X|^2) into power_scratch for the non-redundant half.
+    dispatch::power_spectrum(&self.fft_buf[..FFT_BINS], &mut self.power_scratch);
 
-    // 6. Mel filterbank → log.
+    // 6. Mel filterbank dot products → log.
     for (out_val, f) in out.iter_mut().zip(self.filters.iter()) {
-      let mut energy = 0.0f32;
-      for (j, w) in f.weights.iter().enumerate() {
-        energy += power[f.start_bin + j] * *w;
-      }
-      *out_val = energy.max(LOG_FLOOR).ln();
+      let bins = &self.power_scratch[f.start_bin..f.start_bin + f.weights.len()];
+      *out_val = dispatch::mel_dot_log(bins, &f.weights);
     }
   }
 }
-
-/// Scale factor applied to incoming PCM before feature extraction.
-///
-/// Upstream Python reads WAVs as `int16` and feeds raw int16-range
-/// values to `kaldi_native_fbank`. We accept f32 in `[-1.0, 1.0]` from
-/// callers and multiply by this constant on the way in to keep the
-/// downstream filterbank values numerically identical to upstream.
-const INT16_SCALE: f32 = 32_768.0;
 
 /// Streaming feature extractor: buffers PCM, emits one 80-dim Mel-fbank
 /// feature vector per consumed 10 ms frame.
@@ -389,8 +409,6 @@ pub(crate) struct FeatureExtractor {
   cmvn: Cmvn,
   /// Up to `FRAME_LENGTH_SAMPLES` of pending int16-range samples.
   pcm_tail: Vec<f32>,
-  /// Reusable scratch for the 25 ms analysis window.
-  window_scratch: Vec<f32>,
   /// Reusable scratch for one 80-dim feature vector.
   feature_scratch: Vec<f32>,
 }
@@ -402,7 +420,6 @@ impl FeatureExtractor {
       fbank: MelFilterbank::new(),
       cmvn: Cmvn::from_ark_bytes(cmvn_bytes)?,
       pcm_tail: Vec::with_capacity(FRAME_LENGTH_SAMPLES),
-      window_scratch: vec![0.0; FRAME_LENGTH_SAMPLES],
       feature_scratch: vec![0.0; NUM_MEL_BINS],
     })
   }
@@ -413,12 +430,12 @@ impl FeatureExtractor {
   }
 
   /// Append PCM in `[-1.0, 1.0]` range. Internally rescaled to int16-range
-  /// to match upstream's input domain.
+  /// to match upstream's input domain. Dispatches to a SIMD-vectorized
+  /// scale-and-extend on aarch64; scalar otherwise.
   pub(crate) fn push_pcm(&mut self, pcm: &[f32]) {
-    self.pcm_tail.reserve(pcm.len());
-    for &s in pcm {
-      self.pcm_tail.push(s * INT16_SCALE);
-    }
+    let offset = self.pcm_tail.len();
+    self.pcm_tail.resize(offset + pcm.len(), 0.0);
+    dispatch::pcm_scale_extend(pcm, &mut self.pcm_tail[offset..]);
   }
 
   /// Number of pending int16-range samples in the tail buffer.
@@ -441,14 +458,12 @@ impl FeatureExtractor {
     debug_assert_eq!(out.len(), NUM_MEL_BINS);
     debug_assert!(self.has_full_window());
 
-    // Copy the 25 ms window into reusable scratch (FFT mutates it).
-    self
-      .window_scratch
-      .copy_from_slice(&self.pcm_tail[..FRAME_LENGTH_SAMPLES]);
-
+    // Pass the 25 ms head of pcm_tail directly to the fbank — `extract`
+    // copies into its own `samples_scratch`, so the slice doesn't need to
+    // be a separate scratch buffer.
     self
       .fbank
-      .extract(&self.window_scratch, &mut self.feature_scratch);
+      .extract(&self.pcm_tail[..FRAME_LENGTH_SAMPLES], &mut self.feature_scratch);
     self.cmvn.apply(&mut self.feature_scratch);
     out.copy_from_slice(&self.feature_scratch);
 
