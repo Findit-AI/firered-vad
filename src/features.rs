@@ -52,6 +52,16 @@ pub(crate) struct MelFilterbank {
   filters: Vec<MelFilter>,
 }
 
+impl std::fmt::Debug for MelFilterbank {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("MelFilterbank")
+      .field("fft_buf_len", &self.fft_buf.len())
+      .field("povey_window_len", &self.povey_window.len())
+      .field("filters_len", &self.filters.len())
+      .finish()
+  }
+}
+
 /// Cepstral Mean and Variance Normalization stats parsed from a Kaldi
 /// `.ark` file. The 80-dim means and inverse-std-variances are applied
 /// to each Mel-fbank feature vector before it is fed to the model.
@@ -325,6 +335,87 @@ impl MelFilterbank {
   }
 }
 
+/// Scale factor applied to incoming PCM before feature extraction.
+///
+/// Upstream Python reads WAVs as `int16` and feeds raw int16-range
+/// values to `kaldi_native_fbank`. We accept f32 in `[-1.0, 1.0]` from
+/// callers and multiply by this constant on the way in to keep the
+/// downstream filterbank values numerically identical to upstream.
+const INT16_SCALE: f32 = 32_768.0;
+
+/// Streaming feature extractor: buffers PCM, emits one 80-dim Mel-fbank
+/// feature vector per consumed 10 ms frame.
+#[derive(Debug)]
+pub(crate) struct FeatureExtractor {
+  fbank: MelFilterbank,
+  cmvn: Cmvn,
+  /// Up to `FRAME_LENGTH_SAMPLES` of pending int16-range samples.
+  pcm_tail: Vec<f32>,
+  /// Reusable scratch for the 25 ms analysis window.
+  window_scratch: Vec<f32>,
+  /// Reusable scratch for one 80-dim feature vector.
+  feature_scratch: Vec<f32>,
+}
+
+impl FeatureExtractor {
+  /// Construct from raw CMVN bytes (Kaldi binary `.ark` format).
+  pub(crate) fn new(cmvn_bytes: &[u8]) -> Result<Self> {
+    Ok(Self {
+      fbank: MelFilterbank::new(),
+      cmvn: Cmvn::from_ark_bytes(cmvn_bytes)?,
+      pcm_tail: Vec::with_capacity(FRAME_LENGTH_SAMPLES),
+      window_scratch: vec![0.0; FRAME_LENGTH_SAMPLES],
+      feature_scratch: vec![0.0; NUM_MEL_BINS],
+    })
+  }
+
+  /// Reset all streaming state. Cmvn / fbank / scratch buffers stay allocated.
+  pub(crate) fn reset(&mut self) {
+    self.pcm_tail.clear();
+  }
+
+  /// Append PCM in `[-1.0, 1.0]` range. Internally rescaled to int16-range
+  /// to match upstream's input domain.
+  pub(crate) fn push_pcm(&mut self, pcm: &[f32]) {
+    self.pcm_tail.reserve(pcm.len());
+    for &s in pcm {
+      self.pcm_tail.push(s * INT16_SCALE);
+    }
+  }
+
+  /// Number of pending int16-range samples in the tail buffer.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub(crate) fn pending_samples(&self) -> usize {
+    self.pcm_tail.len()
+  }
+
+  /// True if the tail buffer holds at least one full 25 ms window.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub(crate) fn has_full_window(&self) -> bool {
+    self.pcm_tail.len() >= FRAME_LENGTH_SAMPLES
+  }
+
+  /// Consume one 25 ms window from the head of the tail and write its
+  /// CMVN-normalized 80-dim feature into `out`. Drops the leading
+  /// `FRAME_SHIFT_SAMPLES` (10 ms) of the tail so successive calls
+  /// produce overlapping 25 ms / 10 ms-hop frames.
+  pub(crate) fn extract_one(&mut self, out: &mut [f32]) {
+    debug_assert_eq!(out.len(), NUM_MEL_BINS);
+    debug_assert!(self.has_full_window());
+
+    // Copy the 25 ms window into reusable scratch (FFT mutates it).
+    self.window_scratch.copy_from_slice(&self.pcm_tail[..FRAME_LENGTH_SAMPLES]);
+
+    self.fbank.extract(&self.window_scratch, &mut self.feature_scratch);
+    self.cmvn.apply(&mut self.feature_scratch);
+    out.copy_from_slice(&self.feature_scratch);
+
+    // Drop the oldest 10 ms (frame shift) so the next call sees the next
+    // 25 ms window aligned at +10 ms.
+    self.pcm_tail.drain(..FRAME_SHIFT_SAMPLES);
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -431,5 +522,46 @@ mod tests {
     // (mel index for 1 kHz is ~28 with these parameters).
     let max_bin = (0..NUM_MEL_BINS).max_by(|a, b| out[*a].partial_cmp(&out[*b]).unwrap()).unwrap();
     assert!((20..40).contains(&max_bin), "peak Mel bin = {max_bin}");
+  }
+
+  const BUNDLED_CMVN_BYTES: &[u8] =
+    include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/models/cmvn.ark"));
+
+  #[test]
+  fn feature_extractor_buffers_partial_frames() {
+    let mut fx = FeatureExtractor::new(BUNDLED_CMVN_BYTES).expect("init");
+    fx.push_pcm(&vec![0.0; 100]);
+    assert!(!fx.has_full_window());
+    assert_eq!(fx.pending_samples(), 100);
+
+    fx.push_pcm(&vec![0.0; 300]);
+    assert!(fx.has_full_window());
+    assert_eq!(fx.pending_samples(), 400);
+
+    let mut out = vec![0.0; NUM_MEL_BINS];
+    fx.extract_one(&mut out);
+    // After consuming one frame, 240 samples (15 ms overlap) remain.
+    assert_eq!(fx.pending_samples(), 240);
+  }
+
+  #[test]
+  fn feature_extractor_emits_consistent_features_for_silence() {
+    let mut fx = FeatureExtractor::new(BUNDLED_CMVN_BYTES).expect("init");
+    fx.push_pcm(&vec![0.0; FRAME_LENGTH_SAMPLES + 3 * FRAME_SHIFT_SAMPLES]);
+
+    let mut a = vec![0.0; NUM_MEL_BINS];
+    let mut b = vec![0.0; NUM_MEL_BINS];
+    fx.extract_one(&mut a);
+    fx.extract_one(&mut b);
+    assert_eq!(a, b, "two consecutive silence frames must produce identical features");
+  }
+
+  #[test]
+  fn feature_extractor_reset_clears_pending() {
+    let mut fx = FeatureExtractor::new(BUNDLED_CMVN_BYTES).expect("init");
+    fx.push_pcm(&vec![0.0; 100]);
+    fx.reset();
+    assert_eq!(fx.pending_samples(), 0);
+    assert!(!fx.has_full_window());
   }
 }
