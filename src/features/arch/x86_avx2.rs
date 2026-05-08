@@ -112,15 +112,16 @@ pub(crate) unsafe fn window_apply(samples: &mut [f32], window: &[f32]) {
 }
 
 /// Power spectrum: `out[i] = re*re + im*im` over the non-redundant FFT
-/// half. The de-interleave pattern: load two 256-bit chunks (16 floats =
-/// 8 complex pairs), square them, then `_mm256_hadd_ps` folds adjacent
-/// (re², im²) pairs into one power scalar each. The final cross-lane
+/// half. Mirrors the AVX-512 design — de-interleave first via two
+/// `_mm256_shuffle_ps` (within-128-bit-lane), then FMA `re² + im²` in
+/// a single fused instruction. The final cross-lane
 /// `_mm256_permute4x64_pd::<0xD8>` (interpreting as f64 lanes) reorders
-/// the hadd output `[p0 p1 p4 p5 p2 p3 p6 p7]` back to `[p0..p7]`.
+/// the within-lane shuffle output `[p0 p1 p4 p5 p2 p3 p6 p7]` back to
+/// `[p0..p7]`.
 ///
 /// # Safety
 ///
-/// AVX2 must be available. `complex.len() == out.len()`.
+/// AVX2 + FMA must be available. `complex.len() == out.len()`.
 #[inline]
 #[target_feature(enable = "avx2,fma")]
 pub(crate) unsafe fn power_spectrum(
@@ -136,14 +137,18 @@ pub(crate) unsafe fn power_spectrum(
       // 16 floats = 8 complex pairs.
       let a = _mm256_loadu_ps(base.add(i * 2));
       let b = _mm256_loadu_ps(base.add(i * 2 + 8));
-      let aa = _mm256_mul_ps(a, a);
-      let bb = _mm256_mul_ps(b, b);
-      // hadd within each 128-bit lane: low lane folds (re0²+im0²,
-      // re1²+im1², re4²+im4², re5²+im5²); high lane folds (re2²+im2²,
-      // re3²+im3², re6²+im6², re7²+im7²).
-      let h = _mm256_hadd_ps(aa, bb);
+      // De-interleave (within each 128-bit lane). `shuffle_ps` mask
+      // `0b10_00_10_00` picks even f32 lanes from (a, b); `0b11_01_11_01`
+      // picks odd lanes. Output is in the within-lane interleaved order
+      // (re0, re1, re4, re5, re2, re3, re6, re7) — fixed below.
+      let re = _mm256_shuffle_ps::<0b10_00_10_00>(a, b);
+      let im = _mm256_shuffle_ps::<0b11_01_11_01>(a, b);
+      // Single-rounding fused multiply-add: `re*re + im*im`.
+      let p_swizzled = _mm256_fmadd_ps(re, re, _mm256_mul_ps(im, im));
       // Reorder 64-bit pairs (0,1,2,3) → (0,2,1,3) to land [p0..p7].
-      let permuted = _mm256_castpd_ps(_mm256_permute4x64_pd::<0b11_01_10_00>(_mm256_castps_pd(h)));
+      let permuted = _mm256_castpd_ps(_mm256_permute4x64_pd::<0b11_01_10_00>(_mm256_castps_pd(
+        p_swizzled,
+      )));
       _mm256_storeu_ps(out.as_mut_ptr().add(i), permuted);
       i += 8;
     }
