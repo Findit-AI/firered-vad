@@ -13,11 +13,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   let mut reader = hound::WavReader::open(&path)?;
   let spec = reader.spec();
   if spec.sample_rate != 16_000 {
-    return Err(format!(
-      "expected 16 kHz mono WAV; got {} Hz {}-channel",
-      spec.sample_rate, spec.channels
-    )
-    .into());
+    return Err(
+      format!(
+        "expected 16 kHz mono WAV; got {} Hz {}-channel",
+        spec.sample_rate, spec.channels
+      )
+      .into(),
+    );
   }
   if spec.channels != 1 {
     return Err("expected mono".into());

@@ -7,8 +7,10 @@
 
 use std::collections::VecDeque;
 
-use crate::event::{FrameResult, SpeechSegment};
-use crate::options::VadOptions;
+use crate::{
+  event::{FrameResult, SpeechSegment},
+  options::VadOptions,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum VadState {
@@ -62,10 +64,6 @@ impl Postprocessor {
   /// "set_options at runtime" use case where you're tuning thresholds).
   pub(crate) fn set_options(&mut self, options: VadOptions) {
     self.options = options;
-  }
-
-  pub(crate) fn options(&self) -> &VadOptions {
-    &self.options
   }
 
   /// Const-fn variant of `options()` used by `Vad::options()`.
@@ -269,8 +267,9 @@ impl Postprocessor {
 
 #[cfg(test)]
 mod tests {
-  use super::*;
   use core::time::Duration;
+
+  use super::*;
 
   fn opts() -> VadOptions {
     // Permissive defaults useful for unit testing: smaller min_speech /
@@ -298,7 +297,7 @@ mod tests {
   #[test]
   fn silence_alone_yields_no_segments() {
     let mut p = Postprocessor::new(opts());
-    let segs = drive(&mut p, &vec![0.0; 50]);
+    let segs = drive(&mut p, &[0.0; 50]);
     assert!(segs.is_empty());
     assert!(!p.is_active());
   }
@@ -314,9 +313,9 @@ mod tests {
   #[test]
   fn three_speech_frames_then_silence_closes_one_segment() {
     let mut p = Postprocessor::new(opts());
-    let mut probs = vec![0.9; 3];                 // promote to SPEECH on frame 3 (1-based)
-    probs.extend(vec![0.9; 5]);                   // hold SPEECH
-    probs.extend(vec![0.0; 4]);                   // POSSIBLE_SILENCE then close after 3 silence frames
+    let mut probs = vec![0.9; 3]; // promote to SPEECH on frame 3 (1-based)
+    probs.extend(vec![0.9; 5]); // hold SPEECH
+    probs.extend(vec![0.0; 4]); // POSSIBLE_SILENCE then close after 3 silence frames
     let segs = drive(&mut p, &probs);
     assert_eq!(segs.len(), 1);
     assert!(segs[0].sample_count() > 0);
@@ -325,7 +324,7 @@ mod tests {
   #[test]
   fn finish_flushes_open_segment() {
     let mut p = Postprocessor::new(opts());
-    let probs = vec![0.9; 10];                    // open and stay in SPEECH
+    let probs = vec![0.9; 10]; // open and stay in SPEECH
     drive(&mut p, &probs);
     assert!(p.is_active());
     let segment = p.finish_active().expect("trailing segment");
@@ -343,7 +342,11 @@ mod tests {
     let mut probs = vec![0.9; 12];
     probs.extend(vec![0.0; 5]);
     let segs = drive(&mut p, &probs);
-    assert!(segs.len() >= 2, "expected at least 2 segments; got {}", segs.len());
+    assert!(
+      segs.len() >= 2,
+      "expected at least 2 segments; got {}",
+      segs.len()
+    );
   }
 
   #[test]

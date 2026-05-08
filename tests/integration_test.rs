@@ -31,7 +31,7 @@ fn synthetic_speech_like(duration_secs: f32) -> Vec<f32> {
     for f in formants {
       sample += 0.1 * (core::f32::consts::TAU * f * t).sin();
     }
-    buf.push(sample.max(-1.0).min(1.0));
+    buf.push(sample.clamp(-1.0, 1.0));
   }
   buf
 }
@@ -61,8 +61,8 @@ fn pure_silence_produces_no_segments() {
 fn synthetic_speech_then_silence_emits_at_least_one_segment() {
   let mut vad = Vad::bundled().expect("bundled");
 
-  let mut pcm = synthetic_speech_like(1.5);          // 1.5 s of "speech"
-  pcm.extend(vec![0.0; SAMPLE_RATE_HZ as usize]);    // 1 s of silence
+  let mut pcm = synthetic_speech_like(1.5); // 1.5 s of "speech"
+  pcm.extend(vec![0.0; SAMPLE_RATE_HZ as usize]); // 1 s of silence
   vad.push_samples(&pcm).expect("push samples");
   vad.finish().expect("finish");
 

@@ -4,9 +4,11 @@ use std::path::Path;
 
 use ort::{session::Session as OrtSession, value::TensorRef};
 
-use crate::error::{Error, Result};
-use crate::features::NUM_MEL_BINS;
-use crate::options::SessionOptions;
+use crate::{
+  error::{Error, Result},
+  features::NUM_MEL_BINS,
+  options::SessionOptions,
+};
 
 const FEAT_NAME: &str = "feat";
 const CACHES_IN_NAME: &str = "caches_in";
@@ -47,7 +49,10 @@ impl OrtRunner {
       .with_optimization_level(opts.optimization_level())
       .map_err(ort::Error::from)?
       .commit_from_file(path)
-      .map_err(|source| Error::LoadModel { path: path.to_path_buf(), source })?;
+      .map_err(|source| Error::LoadModel {
+        path: path.to_path_buf(),
+        source,
+      })?;
     Ok(Self::from_ort_session(session))
   }
 
@@ -111,7 +116,12 @@ impl OrtRunner {
     validate_shape(
       CACHES_OUT_NAME,
       caches_shape.as_ref(),
-      &[CACHE_BLOCKS as i64, 1, CACHE_CHANNELS as i64, CACHE_TIME as i64],
+      &[
+        CACHE_BLOCKS as i64,
+        1,
+        CACHE_CHANNELS as i64,
+        CACHE_TIME as i64,
+      ],
     )?;
 
     self.prob_scratch.extend_from_slice(probs_data);
@@ -128,7 +138,10 @@ fn validate_shape(tensor: &'static str, actual: &[i64], expected: &[i64]) -> Res
   if actual == expected {
     Ok(())
   } else {
-    Err(Error::UnexpectedOutputShape { tensor, shape: actual.to_vec() })
+    Err(Error::UnexpectedOutputShape {
+      tensor,
+      shape: actual.to_vec(),
+    })
   }
 }
 
@@ -168,7 +181,10 @@ mod tests {
     let initial = runner.caches.clone();
     runner.push_feature(&silence);
     runner.infer().expect("infer");
-    assert_ne!(initial, runner.caches, "caches should change after one inference");
+    assert_ne!(
+      initial, runner.caches,
+      "caches should change after one inference"
+    );
   }
 
   #[test]

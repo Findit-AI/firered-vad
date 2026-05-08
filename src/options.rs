@@ -8,14 +8,14 @@
 use core::time::Duration;
 
 pub use ort::session::builder::GraphOptimizationLevel;
-
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "serde")]
 mod graph_optimization_level {
-  use super::GraphOptimizationLevel;
   use serde::*;
+
+  use super::GraphOptimizationLevel;
 
   #[derive(
     Debug, Default, Clone, Copy, Eq, PartialEq, Hash, Ord, PartialOrd, Serialize, Deserialize,
@@ -82,7 +82,7 @@ mod graph_optimization_level {
 ///
 /// This stays small: deployment-specific knobs (intra-thread count,
 /// inter-thread count, execution providers) belong one layer up and
-/// should be applied to a manually built [`ort::Session`] passed into
+/// should be applied to a manually built `ort::Session` passed into
 /// [`crate::Vad::from_ort_session`].
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -126,7 +126,7 @@ impl SessionOptions {
     self
   }
 
-  /// Builder variant of [`set_optimization_level`].
+  /// Builder variant of [`Self::set_optimization_level`].
   #[cfg_attr(not(tarpaulin), inline(always))]
   pub const fn with_optimization_level(mut self, level: GraphOptimizationLevel) -> Self {
     self.optimization_level = level;
@@ -269,7 +269,7 @@ impl VadOptions {
     self
   }
 
-  /// Builder variant of [`set_smooth_window_size`].
+  /// Builder variant of [`Self::set_smooth_window_size`].
   #[cfg_attr(not(tarpaulin), inline(always))]
   pub const fn with_smooth_window_size(mut self, size: u32) -> Self {
     self.smooth_window_size = size;
@@ -289,7 +289,7 @@ impl VadOptions {
     self
   }
 
-  /// Builder variant of [`set_speech_threshold`].
+  /// Builder variant of [`Self::set_speech_threshold`].
   #[cfg_attr(not(tarpaulin), inline(always))]
   pub const fn with_speech_threshold(mut self, t: f32) -> Self {
     self.speech_threshold = sanitize_probability(t);
@@ -309,7 +309,7 @@ impl VadOptions {
     self
   }
 
-  /// Builder variant of [`set_pad_start`].
+  /// Builder variant of [`Self::set_pad_start`].
   #[cfg_attr(not(tarpaulin), inline(always))]
   pub const fn with_pad_start(mut self, d: Duration) -> Self {
     self.pad_start = d;
@@ -329,7 +329,7 @@ impl VadOptions {
     self
   }
 
-  /// Builder variant of [`set_min_speech_duration`].
+  /// Builder variant of [`Self::set_min_speech_duration`].
   #[cfg_attr(not(tarpaulin), inline(always))]
   pub const fn with_min_speech_duration(mut self, d: Duration) -> Self {
     self.min_speech_duration = d;
@@ -349,7 +349,7 @@ impl VadOptions {
     self
   }
 
-  /// Builder variant of [`set_max_speech_duration`].
+  /// Builder variant of [`Self::set_max_speech_duration`].
   #[cfg_attr(not(tarpaulin), inline(always))]
   pub const fn with_max_speech_duration(mut self, d: Duration) -> Self {
     self.max_speech_duration = Some(d);
@@ -376,7 +376,7 @@ impl VadOptions {
     self
   }
 
-  /// Builder variant of [`set_min_silence_duration`].
+  /// Builder variant of [`Self::set_min_silence_duration`].
   #[cfg_attr(not(tarpaulin), inline(always))]
   pub const fn with_min_silence_duration(mut self, d: Duration) -> Self {
     self.min_silence_duration = d;
@@ -396,7 +396,7 @@ impl VadOptions {
     self
   }
 
-  /// Builder variant of [`set_session_options`].
+  /// Builder variant of [`Self::set_session_options`].
   #[cfg_attr(not(tarpaulin), inline(always))]
   pub const fn with_session_options(mut self, opts: SessionOptions) -> Self {
     self.session_options = opts;
@@ -444,13 +444,19 @@ mod tests {
   #[test]
   fn session_options_default_optimizes_at_level_3() {
     let opts = SessionOptions::default();
-    assert!(matches!(opts.optimization_level(), GraphOptimizationLevel::Level3));
+    assert!(matches!(
+      opts.optimization_level(),
+      GraphOptimizationLevel::Level3
+    ));
   }
 
   #[test]
   fn session_options_with_optimization_level_overrides() {
     let opts = SessionOptions::new().with_optimization_level(GraphOptimizationLevel::Level1);
-    assert!(matches!(opts.optimization_level(), GraphOptimizationLevel::Level1));
+    assert!(matches!(
+      opts.optimization_level(),
+      GraphOptimizationLevel::Level1
+    ));
   }
 
   #[test]

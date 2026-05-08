@@ -1,14 +1,15 @@
 //! The Sans-I/O `Vad` engine.
 
-use std::collections::VecDeque;
-use std::path::Path;
+use std::{collections::VecDeque, path::Path};
 
-use crate::detector::Postprocessor;
-use crate::error::Result;
-use crate::event::VadEvent;
-use crate::features::{FeatureExtractor, NUM_MEL_BINS};
-use crate::inference::OrtRunner;
-use crate::options::VadOptions;
+use crate::{
+  detector::Postprocessor,
+  error::Result,
+  event::VadEvent,
+  features::{FeatureExtractor, NUM_MEL_BINS},
+  inference::OrtRunner,
+  options::VadOptions,
+};
 
 /// Bundled FireRedVAD streaming ONNX (Apache-2.0; see `THIRD_PARTY_NOTICES.md`).
 #[cfg(feature = "bundled")]
@@ -21,10 +22,8 @@ pub const BUNDLED_MODEL: &[u8] = include_bytes!(concat!(
 /// Bundled CMVN stats (Apache-2.0).
 #[cfg(feature = "bundled")]
 #[cfg_attr(docsrs, doc(cfg(feature = "bundled")))]
-pub const BUNDLED_CMVN: &[u8] = include_bytes!(concat!(
-  env!("CARGO_MANIFEST_DIR"),
-  "/models/cmvn.ark"
-));
+pub const BUNDLED_CMVN: &[u8] =
+  include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/models/cmvn.ark"));
 
 /// Streaming Voice Activity Detector for the FireRedVAD model.
 ///
@@ -100,9 +99,11 @@ impl Vad {
     options: VadOptions,
   ) -> Result<Self> {
     let runner = OrtRunner::from_file(model, options.session_options())?;
-    let cmvn_bytes = std::fs::read(cmvn.as_ref()).map_err(|source| {
-      crate::error::Error::LoadCmvn { path: cmvn.as_ref().to_path_buf(), source }
-    })?;
+    let cmvn_bytes =
+      std::fs::read(cmvn.as_ref()).map_err(|source| crate::error::Error::LoadCmvn {
+        path: cmvn.as_ref().to_path_buf(),
+        source,
+      })?;
     Self::wrap(runner, &cmvn_bytes, options)
   }
 
@@ -234,7 +235,9 @@ impl Vad {
 
 #[cfg(test)]
 mod tests {
+  #[allow(unused_imports)]
   use super::*;
+  #[cfg(feature = "bundled")]
   use crate::event::VadEvent;
 
   #[cfg(feature = "bundled")]

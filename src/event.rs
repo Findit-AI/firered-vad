@@ -1,7 +1,6 @@
 //! Public event types emitted by [`crate::Vad`].
 
-use core::ops::Range;
-use core::time::Duration;
+use core::{ops::Range, time::Duration};
 
 /// One closed continuous human-speech window on the stream timeline.
 ///
@@ -24,7 +23,10 @@ impl SpeechSegment {
   /// only producer in normal use.
   #[cfg_attr(not(tarpaulin), inline(always))]
   pub const fn new(start_sample: u64, end_sample: u64) -> Self {
-    Self { start_sample, end_sample }
+    Self {
+      start_sample,
+      end_sample,
+    }
   }
 
   /// Absolute sample index where the segment starts (inclusive).

@@ -77,13 +77,18 @@ mod tests {
 
   #[test]
   fn invalid_cmvn_carries_static_reason() {
-    let err = Error::InvalidCmvn { reason: "missing magic" };
+    let err = Error::InvalidCmvn {
+      reason: "missing magic",
+    };
     assert!(err.to_string().contains("missing magic"));
   }
 
   #[test]
   fn unexpected_output_shape_renders_shape() {
-    let err = Error::UnexpectedOutputShape { tensor: "probs", shape: vec![1, 2, 3] };
+    let err = Error::UnexpectedOutputShape {
+      tensor: "probs",
+      shape: vec![1, 2, 3],
+    };
     assert!(err.to_string().contains("probs"));
     assert!(err.to_string().contains("[1, 2, 3]"));
   }

@@ -22,7 +22,6 @@ pub use error::{Error, Result};
 pub use event::{FrameResult, SpeechSegment, VadEvent};
 pub use options::{GraphOptimizationLevel, SessionOptions, VadOptions};
 pub use vad::Vad;
-
 #[cfg(feature = "bundled")]
 #[cfg_attr(docsrs, doc(cfg(feature = "bundled")))]
 pub use vad::{BUNDLED_CMVN, BUNDLED_MODEL};

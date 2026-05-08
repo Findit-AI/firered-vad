@@ -92,7 +92,9 @@ impl Cmvn {
     let mut i: usize = 0;
     let need = |i: usize, n: usize| -> Result<()> {
       if bytes.len() < i + n {
-        Err(Error::InvalidCmvn { reason: "truncated header" })
+        Err(Error::InvalidCmvn {
+          reason: "truncated header",
+        })
       } else {
         Ok(())
       }
@@ -100,38 +102,50 @@ impl Cmvn {
 
     need(i, 2)?;
     if &bytes[i..i + 2] != b"\x00B" {
-      return Err(Error::InvalidCmvn { reason: "missing \\0B magic" });
+      return Err(Error::InvalidCmvn {
+        reason: "missing \\0B magic",
+      });
     }
     i += 2;
 
     need(i, 3)?;
     if &bytes[i..i + 3] != b"DM " {
-      return Err(Error::InvalidCmvn { reason: "expected double-matrix marker 'DM '" });
+      return Err(Error::InvalidCmvn {
+        reason: "expected double-matrix marker 'DM '",
+      });
     }
     i += 3;
 
     need(i, 1)?;
     if bytes[i] != 4 {
-      return Err(Error::InvalidCmvn { reason: "expected 4-byte int32 size token before rows" });
+      return Err(Error::InvalidCmvn {
+        reason: "expected 4-byte int32 size token before rows",
+      });
     }
     i += 1;
     need(i, 4)?;
     let rows = i32::from_le_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]);
     i += 4;
     if rows != 2 {
-      return Err(Error::InvalidCmvn { reason: "expected exactly 2 rows (sums, sum_sqs)" });
+      return Err(Error::InvalidCmvn {
+        reason: "expected exactly 2 rows (sums, sum_sqs)",
+      });
     }
 
     need(i, 1)?;
     if bytes[i] != 4 {
-      return Err(Error::InvalidCmvn { reason: "expected 4-byte int32 size token before cols" });
+      return Err(Error::InvalidCmvn {
+        reason: "expected 4-byte int32 size token before cols",
+      });
     }
     i += 1;
     need(i, 4)?;
     let cols = i32::from_le_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]);
     i += 4;
     if cols != (NUM_MEL_BINS as i32) + 1 {
-      return Err(Error::InvalidCmvn { reason: "expected NUM_MEL_BINS + 1 columns" });
+      return Err(Error::InvalidCmvn {
+        reason: "expected NUM_MEL_BINS + 1 columns",
+      });
     }
 
     let total = (rows as usize) * (cols as usize) * 8;
@@ -140,8 +154,14 @@ impl Cmvn {
     let mut p = i;
     for _ in 0..(rows as usize) * (cols as usize) {
       let chunk = [
-        bytes[p], bytes[p + 1], bytes[p + 2], bytes[p + 3],
-        bytes[p + 4], bytes[p + 5], bytes[p + 6], bytes[p + 7],
+        bytes[p],
+        bytes[p + 1],
+        bytes[p + 2],
+        bytes[p + 3],
+        bytes[p + 4],
+        bytes[p + 5],
+        bytes[p + 6],
+        bytes[p + 7],
       ];
       data.push(f64::from_le_bytes(chunk));
       p += 8;
@@ -149,7 +169,9 @@ impl Cmvn {
 
     let count = data[NUM_MEL_BINS]; // first row, last column
     if !(count.is_finite() && count >= 1.0) {
-      return Err(Error::InvalidCmvn { reason: "non-positive CMVN count" });
+      return Err(Error::InvalidCmvn {
+        reason: "non-positive CMVN count",
+      });
     }
 
     let mut means = Vec::with_capacity(NUM_MEL_BINS);
@@ -168,24 +190,19 @@ impl Cmvn {
       inverse_std_variances.push(istd as f32);
     }
 
-    Ok(Self { means, inverse_std_variances })
+    Ok(Self {
+      means,
+      inverse_std_variances,
+    })
   }
 
   /// Apply CMVN in place to one 80-dim feature vector.
   #[cfg_attr(not(tarpaulin), inline(always))]
   pub(crate) fn apply(&self, feature: &mut [f32]) {
     debug_assert_eq!(feature.len(), NUM_MEL_BINS);
-    for d in 0..NUM_MEL_BINS {
-      feature[d] = (feature[d] - self.means[d]) * self.inverse_std_variances[d];
+    for (d, f) in feature.iter_mut().enumerate() {
+      *f = (*f - self.means[d]) * self.inverse_std_variances[d];
     }
-  }
-
-  pub(crate) fn means(&self) -> &[f32] {
-    &self.means
-  }
-
-  pub(crate) fn inverse_std_variances(&self) -> &[f32] {
-    &self.inverse_std_variances
   }
 }
 
@@ -303,34 +320,46 @@ impl MelFilterbank {
     samples[0] -= PRE_EMPHASIS * samples[0];
 
     // 3. Window with Povey.
-    for i in 0..FRAME_LENGTH_SAMPLES {
-      samples[i] *= self.povey_window[i];
+    for (i, (s, w)) in samples.iter_mut().zip(self.povey_window.iter()).enumerate() {
+      if i >= FRAME_LENGTH_SAMPLES {
+        break;
+      }
+      *s *= w;
     }
 
     // 4. Zero-pad to FFT_SIZE and run the radix-2 FFT.
-    for i in 0..FFT_SIZE {
-      let re = if i < FRAME_LENGTH_SAMPLES { samples[i] } else { 0.0 };
-      self.fft_buf[i].re = re;
-      self.fft_buf[i].im = 0.0;
+    for (i, buf) in self.fft_buf.iter_mut().enumerate() {
+      let re = if i < FRAME_LENGTH_SAMPLES {
+        samples[i]
+      } else {
+        0.0
+      };
+      buf.re = re;
+      buf.im = 0.0;
     }
     use rustfft::Fft;
     self.fft.process(&mut self.fft_buf);
 
     // 5. Power spectrum (|X|^2) for the non-redundant half.
     let mut power: [f32; FFT_BINS] = [0.0; FFT_BINS];
-    for i in 0..FFT_BINS {
-      let c = self.fft_buf[i];
-      power[i] = c.re * c.re + c.im * c.im;
+    for (i, (p, c)) in power.iter_mut().zip(self.fft_buf.iter()).enumerate() {
+      if i >= FFT_BINS {
+        break;
+      }
+      *p = c.re * c.re + c.im * c.im;
     }
 
     // 6. Mel filterbank → log.
-    for b in 0..NUM_MEL_BINS {
+    for (b, out_val) in out.iter_mut().enumerate() {
+      if b >= NUM_MEL_BINS {
+        break;
+      }
       let f = &self.filters[b];
       let mut energy = 0.0f32;
       for (j, w) in f.weights.iter().enumerate() {
         energy += power[f.start_bin + j] * *w;
       }
-      out[b] = energy.max(LOG_FLOOR).ln();
+      *out_val = energy.max(LOG_FLOOR).ln();
     }
   }
 }
@@ -404,9 +433,13 @@ impl FeatureExtractor {
     debug_assert!(self.has_full_window());
 
     // Copy the 25 ms window into reusable scratch (FFT mutates it).
-    self.window_scratch.copy_from_slice(&self.pcm_tail[..FRAME_LENGTH_SAMPLES]);
+    self
+      .window_scratch
+      .copy_from_slice(&self.pcm_tail[..FRAME_LENGTH_SAMPLES]);
 
-    self.fbank.extract(&self.window_scratch, &mut self.feature_scratch);
+    self
+      .fbank
+      .extract(&self.window_scratch, &mut self.feature_scratch);
     self.cmvn.apply(&mut self.feature_scratch);
     out.copy_from_slice(&self.feature_scratch);
 
@@ -427,12 +460,15 @@ mod tests {
   #[test]
   fn parses_bundled_cmvn_into_80_means_and_istds() {
     let cmvn = Cmvn::from_ark_bytes(BUNDLED_CMVN).expect("parse cmvn");
-    assert_eq!(cmvn.means().len(), NUM_MEL_BINS);
-    assert_eq!(cmvn.inverse_std_variances().len(), NUM_MEL_BINS);
+    assert_eq!(cmvn.means.len(), NUM_MEL_BINS);
+    assert_eq!(cmvn.inverse_std_variances.len(), NUM_MEL_BINS);
     // Means should be roughly in log-mel-energy range; pin the first one so
     // future regressions in parsing immediately surface.
-    let first_mean = cmvn.means()[0];
-    assert!(first_mean > 5.0 && first_mean < 20.0, "first mean = {first_mean}");
+    let first_mean = cmvn.means[0];
+    assert!(
+      first_mean > 5.0 && first_mean < 20.0,
+      "first mean = {first_mean}"
+    );
   }
 
   #[test]
@@ -474,7 +510,11 @@ mod tests {
     assert!(w[0].abs() < 1e-6);
     assert!(w[FRAME_LENGTH_SAMPLES - 1].abs() < 1e-6);
     let centre = (FRAME_LENGTH_SAMPLES - 1) / 2;
-    assert!((w[centre] - 1.0).abs() < 1e-3, "centre weight = {}", w[centre]);
+    assert!(
+      (w[centre] - 1.0).abs() < 1e-3,
+      "centre weight = {}",
+      w[centre]
+    );
   }
 
   #[test]
@@ -501,7 +541,11 @@ mod tests {
     bank.extract(&window, &mut out);
     let log_floor = LOG_FLOOR.ln();
     for v in &out {
-      assert!((*v - log_floor).abs() < 1e-3, "expected log_floor, got {}", v);
+      assert!(
+        (*v - log_floor).abs() < 1e-3,
+        "expected log_floor, got {}",
+        v
+      );
     }
   }
 
@@ -512,15 +556,17 @@ mod tests {
     // 1 kHz sinusoid at int16-range amplitude.
     let f = 1_000.0f32;
     let amp = 8_000.0f32;
-    for n in 0..FRAME_LENGTH_SAMPLES {
-      window[n] = amp * (std::f32::consts::TAU * f * (n as f32) / SAMPLE_RATE_HZ as f32).sin();
+    for (n, w) in window.iter_mut().enumerate() {
+      *w = amp * (std::f32::consts::TAU * f * (n as f32) / SAMPLE_RATE_HZ as f32).sin();
     }
     let mut out = vec![0.0f32; NUM_MEL_BINS];
     bank.extract(&window, &mut out);
 
     // The peak Mel bin should sit somewhere in the lower half of the bank
     // (mel index for 1 kHz is ~28 with these parameters).
-    let max_bin = (0..NUM_MEL_BINS).max_by(|a, b| out[*a].partial_cmp(&out[*b]).unwrap()).unwrap();
+    let max_bin = (0..NUM_MEL_BINS)
+      .max_by(|a, b| out[*a].partial_cmp(&out[*b]).unwrap())
+      .unwrap();
     assert!((20..40).contains(&max_bin), "peak Mel bin = {max_bin}");
   }
 
@@ -553,7 +599,10 @@ mod tests {
     let mut b = vec![0.0; NUM_MEL_BINS];
     fx.extract_one(&mut a);
     fx.extract_one(&mut b);
-    assert_eq!(a, b, "two consecutive silence frames must produce identical features");
+    assert_eq!(
+      a, b,
+      "two consecutive silence frames must produce identical features"
+    );
   }
 
   #[test]
