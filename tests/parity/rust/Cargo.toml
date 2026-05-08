@@ -8,8 +8,12 @@ publish = false
 name = "firered-vad-parity"
 path = "src/main.rs"
 
+[[bin]]
+name = "firered-vad-mel-dump"
+path = "src/mel_dump.rs"
+
 [dependencies]
-firered-vad = { path = "../../.." }
+firered-vad = { path = "../../..", features = ["_debug-features"] }
 hound = "3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -49,10 +49,10 @@ fi
 
 # ── Build Rust runner once ────────────────────────────────────────
 echo "building rust parity runner..."
-RUST_BIN="$(cd rust && cargo build --release --message-format=json 2>/dev/null \
-  | awk -F\" '/"executable":"[^"]+"/ {for (i=1;i<=NF;i++) if ($i=="executable") {print $(i+2); exit}}')"
+RUST_BIN="$(cd rust && cargo build --release --bin firered-vad-parity --message-format=json 2>/dev/null \
+  | awk -F\" '/"executable":"[^"]+firered-vad-parity"/ {for (i=1;i<=NF;i++) if ($i=="executable") {print $(i+2); exit}}')"
 if [ -z "${RUST_BIN}" ] || [ ! -x "${RUST_BIN}" ]; then
-  echo "error: cargo build did not produce an executable" >&2
+  echo "error: cargo build did not produce the firered-vad-parity executable" >&2
   exit 2
 fi
 echo "  bin: ${RUST_BIN}"

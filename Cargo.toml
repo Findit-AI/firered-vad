@@ -15,6 +15,10 @@ categories = ["multimedia::audio", "science"]
 default = ["bundled"]
 bundled = []
 serde = ["dep:serde", "dep:humantime-serde"]
+# Internal: exposes pre-inference mel features so the parity harness can
+# diff them against upstream kaldi-native-fbank. Underscore prefix marks
+# this as a non-stable, harness-only knob; never enable in production.
+_debug-features = []
 coreml = ["ort/coreml"]
 directml = ["ort/directml"]
 cuda = ["ort/cuda"]

@@ -30,8 +30,12 @@ const PRE_EMPHASIS: f32 = 0.97;
 const MEL_LOW_FREQ_HZ: f32 = 20.0;
 const MEL_HIGH_FREQ_HZ: f32 = 8_000.0;
 
-/// Floor for the log of bin energies (Kaldi `log_floor`).
-const LOG_FLOOR: f32 = 1e-20;
+/// Floor for the log of bin energies, matching `kaldi-native-fbank`'s
+/// `std::numeric_limits<float>::epsilon()` (see `feature-fbank.cc`'s
+/// `FbankComputer::Compute`). Note: differs from Kaldi-proper's
+/// hand-tuned 1e-20 — `kaldi-native-fbank` rolled it back to f32::EPSILON,
+/// which is what upstream FireRedVAD's pipeline actually uses.
+const LOG_FLOOR: f32 = f32::EPSILON;
 
 /// One sparse triangular Mel filter, addressed by `start_bin` and `weights`.
 #[derive(Debug, Clone)]
@@ -212,72 +216,87 @@ fn hz_to_mel(hz: f32) -> f32 {
   1127.0 * (1.0 + hz / 700.0).ln()
 }
 
-#[cfg_attr(not(tarpaulin), inline(always))]
-fn mel_to_hz(mel: f32) -> f32 {
-  700.0 * ((mel / 1127.0).exp() - 1.0)
-}
-
 /// Centre frequency of the `i`-th non-redundant FFT bin in Hz.
 #[cfg_attr(not(tarpaulin), inline(always))]
 fn fft_bin_hz(i: usize) -> f32 {
   (i as f32) * (SAMPLE_RATE_HZ as f32) / (FFT_SIZE as f32)
 }
 
+/// Povey window. Computed entirely in `f64` (Kaldi's `cos` and `pow` are
+/// `double`-precision in `feature-window.cc::GetWindow`), then cast to
+/// `f32` for storage. Doing this in `f32` from the start would round at
+/// every step and accumulate ~1 ULP per element vs the C++ reference.
 fn build_povey_window() -> Vec<f32> {
   let n = FRAME_LENGTH_SAMPLES;
-  let a = std::f32::consts::TAU / ((n - 1) as f32);
+  let a: f64 = std::f64::consts::TAU / ((n - 1) as f64);
   (0..n)
-    .map(|i| (0.5 - 0.5 * (a * i as f32).cos()).powf(0.85))
+    .map(|i| {
+      let i_fl = i as f64;
+      ((0.5 - 0.5 * (a * i_fl).cos()).powf(0.85)) as f32
+    })
     .collect()
 }
 
+/// Mel-bank construction matching `kaldi-native-fbank`'s
+/// `MelBanks::InitKaldiMelBanks` precisely:
+///
+/// - The (`num_bins` + 2) anchors are spaced **linearly in mel space**
+///   between `mel(low_freq)` and `mel(high_freq)`.
+/// - Each FFT bin's center frequency is converted to mel, and the
+///   triangular weight is computed in **mel space** as
+///   `(mel - left_mel) / (center_mel - left_mel)` (or the symmetric
+///   right-side formula).
+/// - The boundary test is strict (`mel > left_mel && mel < right_mel`).
+/// - The FFT-bin loop runs over `0..num_fft_bins` where
+///   `num_fft_bins = FFT_SIZE / 2 = 256`. The Nyquist bin (index 256)
+///   is **excluded** to match Kaldi.
+///
+/// Earlier drafts of this file computed the triangle in Hz space, which
+/// gave subtly different filter weights for every bin (Hz-space triangle
+/// vs mel-space triangle differ because mel(f) is non-linear).
 fn build_mel_filters() -> Vec<MelFilter> {
   let mel_low = hz_to_mel(MEL_LOW_FREQ_HZ);
   let mel_high = hz_to_mel(MEL_HIGH_FREQ_HZ);
-  let mel_step = (mel_high - mel_low) / (NUM_MEL_BINS as f32 + 1.0);
+  let mel_freq_delta = (mel_high - mel_low) / (NUM_MEL_BINS as f32 + 1.0);
 
-  // The (NUM_MEL_BINS + 2) Mel-frequency anchor points spanning the band:
-  // `points[b]` is the left edge of filter b-1, the centre of filter b, and
-  // the right edge of filter b+1 (for the matching `b` indices).
-  let mut hz_points = Vec::with_capacity(NUM_MEL_BINS + 2);
-  for k in 0..(NUM_MEL_BINS + 2) {
-    hz_points.push(mel_to_hz(mel_low + (k as f32) * mel_step));
-  }
+  // Kaldi iterates over FFT_SIZE/2 bins (Nyquist excluded).
+  let num_fft_bins = FFT_SIZE / 2;
 
   let mut filters = Vec::with_capacity(NUM_MEL_BINS);
   for b in 0..NUM_MEL_BINS {
-    let left = hz_points[b];
-    let centre = hz_points[b + 1];
-    let right = hz_points[b + 2];
+    let left_mel = mel_low + (b as f32) * mel_freq_delta;
+    let center_mel = mel_low + (b as f32 + 1.0) * mel_freq_delta;
+    let right_mel = mel_low + (b as f32 + 2.0) * mel_freq_delta;
 
-    // Find the FFT bin index range that overlaps [left, right].
-    let mut start_bin = FFT_BINS;
-    let mut end_bin = 0;
-    for i in 0..FFT_BINS {
-      let f = fft_bin_hz(i);
-      if f > left && f < right {
-        if i < start_bin {
+    let mut start_bin = num_fft_bins;
+    let mut end_bin: usize = 0;
+    let mut found_any = false;
+    for i in 0..num_fft_bins {
+      let freq = fft_bin_hz(i);
+      let mel = hz_to_mel(freq);
+      if mel > left_mel && mel < right_mel {
+        if !found_any {
           start_bin = i;
+          found_any = true;
         }
         end_bin = i;
       }
     }
 
     let mut weights = Vec::new();
-    if start_bin <= end_bin {
+    if found_any {
       weights.reserve(end_bin - start_bin + 1);
       for i in start_bin..=end_bin {
-        let f = fft_bin_hz(i);
-        let w = if f <= centre {
-          (f - left) / (centre - left)
+        let freq = fft_bin_hz(i);
+        let mel = hz_to_mel(freq);
+        let w = if mel <= center_mel {
+          (mel - left_mel) / (center_mel - left_mel)
         } else {
-          (right - f) / (right - centre)
+          (right_mel - mel) / (right_mel - center_mel)
         };
-        weights.push(w.max(0.0));
+        weights.push(w);
       }
     } else {
-      // Filter band falls between FFT bins (very narrow band at low Mel
-      // indices); leave it empty — Kaldi behaves the same.
       start_bin = 0;
     }
 

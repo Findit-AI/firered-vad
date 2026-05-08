@@ -251,6 +251,32 @@ impl Vad {
   pub fn recent_frames(&self) -> &[FrameResult] {
     &self.recent_frames
   }
+
+  /// Debug-only: extract Mel-fbank features for a one-shot PCM input
+  /// without running ONNX inference.
+  ///
+  /// Returns a flat `Vec<f32>` of `T * 80` values where `T` is the
+  /// number of 10 ms frames produced by upstream Kaldi's `snip_edges=true`
+  /// rule. Only the feature stage runs; the engine's per-stream caches,
+  /// smoothing window, and state machine are untouched. Calling this
+  /// after `reset()` is the way to start with a clean feature buffer.
+  ///
+  /// Behind the unstable `_debug-features` feature flag — exists solely
+  /// so the parity harness can diff mel features against
+  /// `kaldi_native_fbank`. Never use in production.
+  #[cfg(feature = "_debug-features")]
+  #[doc(hidden)]
+  pub fn _debug_extract_mel_features(&mut self, pcm: &[f32]) -> Vec<f32> {
+    self.features.reset();
+    self.features.push_pcm(pcm);
+    let mut out = Vec::new();
+    while self.features.has_full_window() {
+      let mut frame = vec![0.0; NUM_MEL_BINS];
+      self.features.extract_one(&mut frame);
+      out.extend_from_slice(&frame);
+    }
+    out
+  }
 }
 
 #[cfg(test)]

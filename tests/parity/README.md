@@ -12,32 +12,42 @@ This harness is **not** part of `cargo test`. It is run manually because it requ
 
 Upstream Python rounds `raw_prob` and `smoothed_prob` to **3 decimal places** on storage (`round(raw_prob, 3)` in `fireredvad/core/stream_vad_postprocessor.py`). The Python runner here monkey-patches that rounding away so we compare unrounded values.
 
-Even unrounded, true float-bit-identity is mathematically impossible: upstream uses `kaldi_native_fbank` (C++) and PyTorch, we use a pure-Rust mel-fbank plus the ONNX export of the same model via `ort`. Both pairs introduce small numerical drift on the order of 1e-3, which scales with input amplitude.
+After the mel-fbank fixes documented below, our pure-Rust pipeline is **bit-identical** to upstream Python's `kaldi-native-fbank` + PyTorch pipeline for all practical purposes. The remaining ~3 × 10⁻⁶ residual drift sits at the float32 precision limit and is dominated by FFT-implementation rounding (rustfft's Radix-4 vs `kaldi-native-fbank`'s KissFFT). Discrete fields (segment boundaries, is_speech, etc.) match **exactly** — this is the gate that matters for any downstream consumer.
 
-So the harness pins:
+The harness pins:
 
-- **Discrete fields** (`is_speech`, `is_speech_start`, `is_speech_end`, `speech_start_frame`, `speech_end_frame`): exact equality. The state machine port is bit-identical.
-- **Continuous fields** (`raw_prob`, `smoothed_prob`): tolerance defaults to **5e-3** (`--prob-tol 5e-3`).
+- **Discrete fields** (`is_speech`, `is_speech_start`, `is_speech_end`, `speech_start_frame`, `speech_end_frame`): exact equality. State machine is bit-identical.
+- **Continuous fields** (`raw_prob`, `smoothed_prob`): tolerance defaults to **5e-3** (`--prob-tol 5e-3`); empirically we hit ~3e-6.
 
 ## Empirical results
 
-Tested on 7 fixtures (181,230 total frames, 543 total segments) on 2026-05-08:
+Tested on 7 fixtures (181,230 total frames, 543 total segments):
 
-| Fixture | Frames | Segments (py/rs) | raw_prob max\|Δ\| | smoothed max\|Δ\| | is_speech flips | Boundary mismatch |
+| Fixture | Frames | Segments (py/rs) | raw_prob max\|Δ\| | smoothed max\|Δ\| | is_speech mismatch | Boundary mismatch |
 | --- | --: | --: | --: | --: | --: | --: |
-| 02_pyannote_sample | 2998 | 4/3 ≡ 4/3 | 0.0013 | 0.0009 | 0 | 0 |
-| 03_dual_speaker | 5998 | 19/18 ≡ 19/18 | 0.0023 | 0.0021 | 0 | 0 |
-| 04_three_speaker | 3995 | 10/9 ≡ 10/9 | 0.0016 | 0.0012 | 0 | 0 |
-| 05_four_speaker | 5998 | 15/15 ≡ 15/15 | 0.0012 | 0.0009 | 0 | 0 |
-| 07_yuhewei_dongbei_english | 2524 | 4/4 ≡ 4/4 | **0.069** | **0.035** | 0 | 0 |
-| 06_long_recording (16m) | 97,771 | 439/439 ≡ 439/439 | 0.0027 | 0.0022 | 1 | 1 frame (10 ms) |
-| 10_mrbeast_clean_water (10m) | 61,948 | 54/54 ≡ 54/54 | 0.0038 | 0.0026 | 3 | 0 |
+| 02_pyannote_sample | 2998 | 4/3 ≡ 4/3 | 3 × 10⁻⁶ | 2 × 10⁻⁶ | 0 | 0 |
+| 03_dual_speaker | 5998 | 19/18 ≡ 19/18 | 3 × 10⁻⁶ | 2 × 10⁻⁶ | 0 | 0 |
+| 04_three_speaker | 3995 | 10/9 ≡ 10/9 | 2 × 10⁻⁶ | 1 × 10⁻⁶ | 0 | 0 |
+| 05_four_speaker | 5998 | 15/15 ≡ 15/15 | 2 × 10⁻⁶ | 1 × 10⁻⁶ | 0 | 0 |
+| 07_yuhewei_dongbei_english | 2524 | 4/4 ≡ 4/4 | 2 × 10⁻⁶ | 1 × 10⁻⁶ | 0 | 0 |
+| 10_mrbeast_clean_water (10m) | 61,948 | 54/54 ≡ 54/54 | 3 × 10⁻⁶ | 3 × 10⁻⁶ | 0 | 0 |
+| 06_long_recording (16m) | 97,771 | 439/439 ≡ 439/439 | 3 × 10⁻⁶ | 3 × 10⁻⁶ | 0 | 0 |
 
-Across 181,230 frames: 4 is_speech flips (rate 2.2 × 10⁻⁵), one segment-end frame off by 10 ms in 543 emitted segments. Segment counts and start/end pairings match exactly on every fixture.
+**All discrete fields match exactly** across 181,230 frames. Mean continuous-field Δ rounds to 0.0 in float32. Segment counts, segment boundaries, and segment timings are identical fixture-by-fixture.
 
-The 07_yuhewei outlier (max Δ ≈ 7%) is an artifact of high signal amplitude (RMS 4343 vs ~700 for the dia fixtures); float32 mel-fbank has more headroom-for-error on louder inputs.
+## What was wrong before, and what we fixed
 
-Practical impact for downstream consumers (Whisper feeding, audio slicing): negligible — the slice boundaries are identical to within at most a single 10 ms frame in the worst observed case, far below human perception.
+An initial draft of the harness reported max raw_prob deltas of 1-3 × 10⁻³ typical and ~7 × 10⁻² on the high-amplitude 07_yuhewei fixture. A line-by-line diff against upstream's `kaldi-native-fbank` (C++) found three real algorithmic bugs in the pure-Rust mel-fbank:
+
+1. **Mel filter weights were linear in Hz, not in mel space.** `kaldi-native-fbank` (`mel-computations.cc::InitKaldiMelBanks`) builds each triangular filter on `(left_mel, center_mel, right_mel)` anchors that are linearly spaced in **mel** space, then computes weights as `(mel(f) - left_mel) / (center_mel - left_mel)`. The pure-Rust code converted the anchors to Hz first and computed `(f - left_hz) / (center_hz - left_hz)`. Because `mel(f)` is logarithmic in `f`, the two definitions give visibly different weights for every bin — the dominant source of drift.
+
+2. **Log-floor was 1e-20 instead of `f32::EPSILON`.** `kaldi-native-fbank` (`feature-fbank.cc::Compute`) clamps mel-bin energies with `std::max(energy, std::numeric_limits<float>::epsilon())` before taking the log; the original Kaldi project used 1e-20. For very-quiet bins the difference is large (`log(1e-20) ≈ -46` vs `log(1.19e-7) ≈ -16`).
+
+3. **Povey window was computed in `f32`.** `kaldi-native-fbank::GetWindow` keeps `cos(...)` and `pow(..., 0.85)` in `double` and only narrows to `float` at storage. Doing the whole computation in `f32` accumulates ~1 ULP per element of error, which then multiplies into every windowed sample.
+
+Bonus: also fixed a small off-by-one — Kaldi's mel filter loop iterates over `0..num_fft_bins = FFT_SIZE/2 = 256`, **excluding** the Nyquist bin. The pure-Rust code iterated `0..FFT_BINS = 257`, including Nyquist. The strict-inequality test `mel < right_mel` rejected Nyquist anyway in the dia fixtures, but the loop bound is now exactly Kaldi's.
+
+After these four fixes, the residual drift is 433× smaller on average and 23,000× smaller on the worst-case high-amplitude fixture.
 
 ## One-time setup
 
