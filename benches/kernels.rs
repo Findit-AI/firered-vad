@@ -31,8 +31,11 @@ fn fill_pseudo_random(buf: &mut [f32], seed: u32) {
 }
 
 // ── pcm_scale_extend ────────────────────────────────────────────────
+// Scalar-only — the dispatcher routes straight to scalar (no NEON
+// path exposed). Kept here so we keep an eye on the kernel's
+// per-element cost as a regression guard. See
+// `src/features/arch/neon.rs` for the rationale.
 fn bench_pcm_scale_extend(c: &mut Criterion) {
-  // Realistic chunk sizes: 10ms / 100ms / 1s of 16 kHz audio.
   const SIZES: &[usize] = &[160, 1_600, 16_000];
 
   let mut group = c.benchmark_group("pcm_scale_extend");
@@ -45,11 +48,6 @@ fn bench_pcm_scale_extend(c: &mut Criterion) {
 
     group.bench_with_input(BenchmarkId::new("scalar", n), &n, |b, &_| {
       b.iter(|| scalar::pcm_scale_extend(black_box(&src), black_box(&mut dst)));
-    });
-
-    #[cfg(target_arch = "aarch64")]
-    group.bench_with_input(BenchmarkId::new("neon", n), &n, |b, &_| {
-      b.iter(|| unsafe { neon::pcm_scale_extend(black_box(&src), black_box(&mut dst)) });
     });
   }
   group.finish();

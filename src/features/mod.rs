@@ -94,12 +94,11 @@ pub mod __bench_internals {
   #[cfg(target_arch = "aarch64")]
   #[allow(unsafe_code)]
   pub mod neon {
+    // `pcm_scale_extend` has no NEON variant — see the rationale in
+    // `super::super::arch::neon`. Scalar wins for that kernel.
+
     use super::super::arch::neon as inner;
 
-    #[inline]
-    pub unsafe fn pcm_scale_extend(pcm: &[f32], out: &mut [f32]) {
-      unsafe { inner::pcm_scale_extend(pcm, out) }
-    }
     #[inline]
     pub unsafe fn dc_remove(window: &[f32], out: &mut [f32]) {
       unsafe { inner::dc_remove(window, out) }
@@ -167,10 +166,6 @@ pub(crate) const LOG_FLOOR: f32 = f32::EPSILON;
 /// callers and multiply by this constant on the way in to keep the
 /// downstream filterbank values numerically identical to upstream.
 pub(crate) const INT16_SCALE: f32 = 32_768.0;
-
-/// Same value as `INT16_SCALE`, kept under a separate name for the
-/// SIMD kernels that need an explicit `f32` literal at the call site.
-pub(crate) const INT16_SCALE_VEC: f32 = INT16_SCALE;
 
 /// One sparse triangular Mel filter, addressed by `start_bin` and `weights`.
 #[derive(Debug, Clone)]

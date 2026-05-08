@@ -39,17 +39,14 @@ pub(super) fn neon_available() -> bool {
 
 // ---- dispatchers ----
 
-/// Scale + extend PCM into the output region. Vectorizes via NEON
-/// when available; falls back to scalar otherwise.
+/// Scale + extend PCM into the output region. Always scalar — the
+/// kernel is one FP mul per element, which LLVM auto-vectorizes
+/// inline into the caller better than any hand-rolled NEON path can
+/// match (the latter pays a function-call cost on every invocation
+/// because `#[target_feature]` blocks `#[inline(always)]` on stable
+/// Rust). See the rationale in `super::arch::neon`.
 #[cfg_attr(not(tarpaulin), inline(always))]
 pub(super) fn pcm_scale_extend(pcm: &[f32], out: &mut [f32]) {
-  #[cfg(target_arch = "aarch64")]
-  {
-    if neon_available() {
-      unsafe { arch::neon::pcm_scale_extend(pcm, out) };
-      return;
-    }
-  }
   scalar::pcm_scale_extend(pcm, out);
 }
 

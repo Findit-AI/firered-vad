@@ -33,32 +33,20 @@
 
 use core::arch::aarch64::*;
 
-use crate::features::{FRAME_LENGTH_SAMPLES, INT16_SCALE_VEC, NUM_MEL_BINS, scalar};
+use crate::features::{FRAME_LENGTH_SAMPLES, NUM_MEL_BINS, scalar};
 
-/// Scale `pcm` by `INT16_SCALE` and store into `out`. 4 lanes / iter.
-///
-/// # Safety
-///
-/// NEON must be available. `pcm.len() == out.len()`.
-#[inline]
-#[target_feature(enable = "neon")]
-pub(crate) unsafe fn pcm_scale_extend(pcm: &[f32], out: &mut [f32]) {
-  debug_assert_eq!(pcm.len(), out.len());
-  let n = pcm.len();
-  let mut i = 0usize;
-  unsafe {
-    let scale = vdupq_n_f32(INT16_SCALE_VEC);
-    while i + 4 <= n {
-      let v = vld1q_f32(pcm.as_ptr().add(i));
-      let scaled = vmulq_f32(v, scale);
-      vst1q_f32(out.as_mut_ptr().add(i), scaled);
-      i += 4;
-    }
-  }
-  if i < n {
-    scalar::pcm_scale_extend(&pcm[i..], &mut out[i..]);
-  }
-}
+// `pcm_scale_extend` deliberately has no NEON path. The kernel is one
+// FP mul per element (`*dst = src * 32768.0`), which LLVM at
+// `opt-level=3` auto-vectorizes inline into the caller — emitting the
+// same NEON instructions a hand-rolled `vmulq_f32` loop would, but
+// without a function-call boundary. The bench (commit 4383466)
+// measured the hand-rolled NEON path as **slower**: 9.1→12.1 ns at
+// 160 elements, 68.8→117.2 ns at 1.6k, 700→1113 ns at 16k. The reason
+// is that `#[target_feature(enable = "neon")]` blocks
+// `#[inline(always)]` on stable Rust, so every call pays a real
+// function-call cost on top of one mul per element. Letting LLVM
+// auto-vec scalar inline is strictly better here. Dispatcher in
+// `super::super::dispatch::pcm_scale_extend` calls scalar directly.
 
 /// DC removal: compute mean, store `window[i] - mean` into `out`.
 /// 4 lanes / iter for both the sum reduction and the subtract loop.
