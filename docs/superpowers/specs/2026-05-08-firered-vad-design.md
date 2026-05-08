@@ -86,7 +86,7 @@ mod options;
 mod vad;
 
 pub use error::{Error, Result};
-pub use event::{FrameResult, SpeechSegment, VadEvent};
+pub use event::SpeechSegment;
 pub use options::{SessionOptions, VadOptions};
 pub use vad::Vad;
 // `GraphOptimizationLevel` is re-exported from `ort` rather than defined locally —
@@ -123,10 +123,11 @@ impl Vad {
     pub fn from_ort_session(session: ort::Session, cmvn: &[u8], options: VadOptions) -> Result<Self>;
 
     // ── Sans-I/O surface ───────────────────────────────────────────────
-    pub fn push_samples(&mut self, pcm: &[f32]) -> Result<()>;
-    pub fn finish(&mut self) -> Result<()>;
-    pub fn poll_event(&mut self) -> Option<VadEvent>;
-    pub fn drain_events<F>(&mut self, f: F) where F: FnMut(VadEvent);
+    /// Feed PCM, returns the next available closed segment (or None).
+    /// Pass &[] to drain buffered segments without processing new PCM.
+    pub fn push_samples(&mut self, pcm: &[f32]) -> Result<Option<SpeechSegment>>;
+    /// Mark end-of-stream; returns the trailing segment if one was open.
+    pub fn finish(&mut self) -> Result<Option<SpeechSegment>>;
     pub fn reset(&mut self);
 
     // ── Inspection ─────────────────────────────────────────────────────
@@ -136,19 +137,14 @@ impl Vad {
     pub const fn pending_samples(&self) -> usize;
     pub const fn is_active(&self) -> bool;
     pub const fn is_finished(&self) -> bool;
-    pub const fn pending_events(&self) -> usize;
+    /// Number of buffered segments awaiting drain via push_samples(&[]).
+    pub fn pending_segments(&self) -> usize;
 }
 ```
 
-### 3.4 `VadEvent`, `SpeechSegment`, `FrameResult`
+### 3.4 `SpeechSegment`
 
 ```rust
-#[derive(Debug, Clone, PartialEq)]
-pub enum VadEvent {
-    Frame(FrameResult),
-    SegmentClosed(SpeechSegment),
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SpeechSegment { /* private fields */ }
 
@@ -163,25 +159,6 @@ impl SpeechSegment {
     pub fn duration(&self) -> Duration;
     pub fn range(&self) -> Range<u64>;
     pub fn range_usize(&self) -> Range<usize>;
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct FrameResult { /* private fields */ }
-
-impl FrameResult {
-    pub const FRAME_SHIFT_SAMPLES: u32 = 160;
-    pub const SAMPLE_RATE_HZ: u32 = 16_000;
-
-    pub const fn frame_index(&self) -> u64;          // 0-based (we shift upstream's 1-based)
-    pub const fn raw_prob(&self) -> f32;
-    pub const fn smoothed_prob(&self) -> f32;
-    pub const fn is_speech(&self) -> bool;
-    pub const fn is_speech_start(&self) -> bool;
-    pub const fn is_speech_end(&self) -> bool;
-    pub const fn speech_start_frame(&self) -> Option<u64>;
-    pub const fn speech_end_frame(&self) -> Option<u64>;
-    pub fn timestamp(&self) -> Duration;
-    pub fn closed_segment(&self) -> Option<SpeechSegment>;   // Some only when is_speech_end
 }
 ```
 
@@ -380,7 +357,7 @@ src/
   inference.rs pub(crate) OrtRunner — wraps ort::Session, runs single inference, scratch buffers
   detector.rs  pub(crate) Postprocessor — smoothing window + 4-state machine
   options.rs   pub VadOptions + pub SessionOptions; re-exports ort::session::builder::GraphOptimizationLevel
-  event.rs     pub VadEvent, pub FrameResult, pub SpeechSegment
+  event.rs     pub SpeechSegment
   error.rs     pub Error, pub Result
 ```
 
@@ -391,27 +368,27 @@ pub struct Vad {
     runner: OrtRunner,
     features: FeatureExtractor,
     detector: Postprocessor,
-    options: VadOptions,
-    events: VecDeque<VadEvent>,
-    frame_count: u64,
+    pending_segments: VecDeque<SpeechSegment>,
+    feature_scratch: Vec<f32>,
     finished: bool,
 }
 ```
 
-`push_samples` does:
+`push_samples` does (when `pcm` is non-empty):
 
 1. Append PCM to `features.pcm_tail`.
 2. While ≥ 400 samples are available, extract a 25 ms window into a feature vector `[80]`. Drop the oldest 160 samples (10 ms hop) from `pcm_tail`.
-3. Once at least one feature vector is extracted from this batch, batch them as `[1, T, 80]` and call `runner.infer(features, &mut detector_caches)`. T is the number of features extracted from this `push_samples` call.
+3. Once at least one feature vector is extracted from this batch, batch them as `[1, T, 80]` and call `runner.infer()`. T is the number of features extracted from this `push_samples` call.
 4. For each prob in `[1, T, 1]`:
-   1. `detector.push_probability(prob, frame_index)` → `(FrameResult, Option<SpeechSegment>)`.
-   2. `events.push_back(VadEvent::Frame(frame_result))`.
-   3. If `Some(segment)`, `events.push_back(VadEvent::SegmentClosed(segment))`.
-5. `frame_count += T`.
+   1. `detector.push_probability(prob)` → `Option<SpeechSegment>`.
+   2. If `Some(segment)`, `pending_segments.push_back(segment)`.
+5. Return `pending_segments.pop_front()`.
 
-`finish` sets `finished = true`, calls `detector.finish_active() -> Option<SpeechSegment>` to flush any open segment, queues that as a final `VadEvent::SegmentClosed`. Does NOT pad a partial 25 ms window (Kaldi `snip_edges=true` semantics).
+When `pcm` is empty (drain mode): skip steps 1-4, just return `pending_segments.pop_front()`.
 
-`poll_event` is `events.pop_front()`. `drain_events` is the obvious loop. `reset` clears caches, smoothing window, state machine state, frame counters, event queue, sets `finished = false`.
+`finish` sets `finished = true`, calls `detector.finish_active() -> Option<SpeechSegment>` to flush any open segment, pushes it to `pending_segments`, returns `pending_segments.pop_front()`. Does NOT pad a partial 25 ms window (Kaldi `snip_edges=true` semantics).
+
+`reset` clears caches, smoothing window, state machine state, frame counters, `pending_segments`, sets `finished = false`.
 
 ### 4.3 `inference.rs` — `OrtRunner`
 
@@ -528,9 +505,9 @@ impl Postprocessor {
     pub(crate) fn reset(&mut self);
     pub(crate) fn set_options(&mut self, options: VadOptions);
 
-    /// Push one raw probability. Returns the per-frame result and, if this
-    /// frame finalizes a segment, the SpeechSegment.
-    pub(crate) fn push_probability(&mut self, raw_prob: f32) -> (FrameResult, Option<SpeechSegment>);
+    /// Push one raw probability. Returns `Some(SpeechSegment)` if this
+    /// frame finalizes a segment, otherwise `None`.
+    pub(crate) fn push_probability(&mut self, raw_prob: f32) -> Option<SpeechSegment>;
 
     /// EOF: if currently in SPEECH or POSSIBLE_SILENCE, close at the current
     /// frame count and emit. Returns None if no open segment.
@@ -540,18 +517,27 @@ impl Postprocessor {
 }
 ```
 
-### 4.6 Per-frame result construction
+### 4.6 Segment construction
 
-Upstream returns 1-based frame indices for `frame_idx`, `speech_start_frame`, `speech_end_frame`. We shift to 0-based on construction:
+When the state machine sets `is_speech_end = true` and both `start_frame` and `end_frame` are `Some`, the segment is computed directly:
 
-- `frame_index = frame_cnt` (0-based; we increment AFTER processing, so the frame currently being processed is `frame_cnt`).
-- `speech_start_frame = upstream_speech_start_frame - 1`.
-- `speech_end_frame = upstream_speech_end_frame - 1`.
+```rust
+if is_speech_end {
+    if let (Some(start), Some(end)) = (start_frame, end_frame) {
+        return Some(SpeechSegment::new(
+            start * (FRAME_SHIFT_SAMPLES as u64),
+            end * (FRAME_SHIFT_SAMPLES as u64),
+        ));
+    }
+}
+```
 
-`SpeechSegment` derived from a `FrameResult` with `is_speech_end == true`:
+Where `FRAME_SHIFT_SAMPLES = 160`. Frame indices are 0-based (upstream uses 1-based; we shift on construction).
 
-- `start_sample = speech_start_frame.unwrap() * 160`.
-- `end_sample = speech_end_frame.unwrap() * 160` (exclusive — first sample after the segment).
+`SpeechSegment` boundaries:
+
+- `start_sample = start_frame * 160`.
+- `end_sample = end_frame * 160` (exclusive — first sample after the segment).
 
 The user slices PCM as `&pcm[segment.range_usize()]` to get the human-speech window for that segment.
 
@@ -560,24 +546,26 @@ The user slices PCM as `&pcm[segment.range_usize()]` to get the human-speech win
 ### 4.7 Probability flow (end-to-end)
 
 ```
-push_samples(&[f32])
+push_samples(&[f32])  [non-empty]
   └─▶ append to features.pcm_tail
   └─▶ while pcm_tail.len() >= 400:
         ├─▶ features.extract_one(&mut feat_buf)        (consumes 1 frame from pcm_tail; drops 160)
         └─▶ append feat_buf to runner.feat_scratch
   └─▶ if any features extracted:
-        ├─▶ runner.infer(features) → &[f32] of T probs
+        ├─▶ runner.infer() → &[f32] of T probs
         └─▶ for each prob:
-              ├─▶ detector.push_probability(prob) → (FrameResult, Option<SpeechSegment>)
-              ├─▶ events.push_back(VadEvent::Frame(...))
-              └─▶ if Some(segment): events.push_back(VadEvent::SegmentClosed(segment))
-  └─▶ frame_count += T
+              ├─▶ detector.push_probability(prob) → Option<SpeechSegment>
+              └─▶ if Some(segment): pending_segments.push_back(segment)
+  └─▶ return pending_segments.pop_front()
+
+push_samples(&[])  [drain mode — no new PCM processing]
+  └─▶ return pending_segments.pop_front()
 
 finish()
   └─▶ finished = true
-  └─▶ if let Some(s) = detector.finish_active(): events.push_back(VadEvent::SegmentClosed(s))
+  └─▶ if let Some(s) = detector.finish_active(): pending_segments.push_back(s)
+  └─▶ return pending_segments.pop_front()
 
-poll_event() → events.pop_front()
 reset() → wipe everything; finished = false
 ```
 
@@ -745,7 +733,7 @@ Mirrors silero's CI exactly (drops the template's sanitizers/Miri/Loom):
 | `min_silence_frame` (default 20) — silence threshold to close in POSSIBLE_SILENCE | `stream_vad_postprocessor.py:138-161` | `VadOptions::min_silence_duration` |
 | 4-state machine (SILENCE / POSSIBLE_SPEECH / SPEECH / POSSIBLE_SILENCE) | `stream_vad_postprocessor.py:91-163` | private `enum VadState` in `detector.rs`; transitions translated 1:1 |
 | `set_mode(0..3)` presets | `stream_vad.py:142-161` | Documented as recipes (see §3.5.2) — callers apply via direct `VadOptions::with_*` calls. No `Mode` enum exposed |
-| Per-frame result fields | `stream_vad_postprocessor.py:8-17` | `pub struct FrameResult` with const-fn accessors; **frame index 0-based** |
+| Per-frame result fields | `stream_vad_postprocessor.py:8-17` | Internal only; exposed externally only as `SpeechSegment` on segment close. **frame index 0-based** |
 | `hit_max_speech` re-arm flag | `stream_vad_postprocessor.py:92-96` | preserved as `Postprocessor.hit_max_speech: bool` |
 | `last_speech_start_frame` / `last_speech_end_frame` clamping for `pad_start` | `stream_vad_postprocessor.py:54-55, 112-114, 131-133, 159-160` | preserved as `Option<u64>` slots in `Postprocessor` |
 
@@ -757,12 +745,14 @@ The **only** upstream knob not exposed: `chunk_max_frame` (offline-only batching
 
 - **Clean-room implementation vs depending on `wavekat-vad`** — `wavekat-vad` already wraps FireRedVAD in Rust, but in a different idiom. We chose clean-room to keep the crate as a true sibling of `silero` in coding style.
 - **Single Sans-I/O `Vad` engine vs three-type split (silero pattern)** — initially proposed silero's three-type split (`Session` / `StreamState` / `SpeechDetector`) for testability. Reverted to single-engine after user feedback: the model fixes batch=1 (no multi-stream), and Sans-I/O makes the API easier to drive from non-Rust hosts (FFI, async runtimes).
-- **Closure callbacks vs Sans-I/O `poll_event`** — closures complicate borrow semantics across multi-state-machine pipelines and don't compose with async drivers. Sans-I/O matches modern Rust patterns (quinn, h2, prost-driven gRPC). `drain_events(F)` is provided as a thin convenience for callers that do want a closure.
+- **Closure callbacks vs returning from `push_samples` directly** — closures complicate borrow semantics across multi-state-machine pipelines and don't compose with async drivers. `push_samples` returning `Result<Option<SpeechSegment>>` matches modern Rust iterator patterns; the drain-via-empty-push idiom handles the rare multi-segment-per-push case without needing a callback.
 - **`merge_silence_duration` knob** — speculatively added in an earlier draft; dropped because silence between speech runs IS the segmentation boundary the caller wants. Adding cross-silence merging would conflate "this speech run" with "this conversation" and is the caller's job if needed.
 - **Heap-allocated buffers vs stack arrays** — even small fixed-size buffers (`[f32; 400]`) are heap-allocated as `Vec<f32>` to keep async-runtime stacks well under their 64 KB–256 KB ceilings. Penalty is one allocation per `Vad` (lifetime-amortized).
 - **`Duration` for time-valued config vs raw frame counts** — `Duration` is the silero idiom; `humantime-serde` round-trips human-readable strings under the optional `serde` feature. Conversion to frames is centralized at the `Postprocessor` boundary.
 - **No `Mode` enum** — earlier drafts exposed a `Mode { VeryPermissive, Permissive, Aggressive, VeryAggressive }` enum that overlaid three numeric fields. Dropped because the presets are just three-field assignments — wrapping them in an enum complicates the API (extra `with_mode` method, "mode is applied not stored" caveats, parity edge cases) for no benefit. Callers configure `speech_threshold`, `min_speech_duration`, and `min_silence_duration` directly; documentation lists the four upstream presets verbatim as copy-paste recipes.
 - **Re-export `ort::session::builder::GraphOptimizationLevel` instead of redefining** — silero treats it as a foreign type and bridges to serde via a private mirror enum. We do the same: callers get the same vocabulary as everyone else using `ort` directly, and we don't have to maintain a parallel enum that drifts from upstream.
+- **Frame events dropped from public API** — original draft exposed per-frame `FrameResult` (raw_prob, smoothed_prob, is_speech, boundary flags) via a `VadEvent` enum. Use case (feeding Whisper) only needs segment boundaries; the per-frame stream was overhead. `push_samples` now returns `Result<Option<SpeechSegment>>` directly, with the drain-via-empty-push idiom handling rare multi-segment-per-push cases.
+- **Music vs singing handled by model choice, not API** — the bundled stream-vad model classifies "voice activity" (vocal sources, including singing) vs non-voice (instrumental music). No explicit AED integration; AED is non-streaming upstream and is deferred to a possible v0.2.
 
 ---
 

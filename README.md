@@ -21,27 +21,24 @@ firered-vad = { version = "0.1", default-features = false }
 ## Quick start
 
 ```rust,no_run
-use firered_vad::{Vad, VadEvent};
+use firered_vad::Vad;
 
 fn main() -> firered_vad::Result<()> {
     let pcm: Vec<f32> = vec![0.0; 16_000]; // 16 kHz f32 PCM in [-1.0, 1.0]
     let mut vad = Vad::bundled()?;
 
     for chunk in pcm.chunks(1_600) {
-        vad.push_samples(chunk)?;
-        while let Some(event) = vad.poll_event() {
-            if let VadEvent::SegmentClosed(segment) = event {
-                // Slice the original PCM to recover the speech window.
-                let _speech = &pcm[segment.range_usize()];
-                // ... feed `speech` into Whisper / your transcriber.
-            }
+        let mut chunk: &[f32] = chunk;
+        while let Some(segment) = vad.push_samples(chunk)? {
+            // Slice the original PCM to recover the speech window.
+            let _speech = &pcm[segment.range_usize()];
+            // ... feed `speech` into Whisper / your transcriber.
+            chunk = &[]; // drain remaining buffered segments before pushing the next chunk
         }
     }
-    vad.finish()?;
-    while let Some(event) = vad.poll_event() {
-        if let VadEvent::SegmentClosed(_segment) = event {
-            // Trailing segment (open at end-of-stream).
-        }
+    if let Some(segment) = vad.finish()? {
+        // Trailing segment (open at end-of-stream).
+        let _speech = &pcm[segment.range_usize()];
     }
     Ok(())
 }
@@ -58,13 +55,14 @@ fn main() -> firered_vad::Result<()> {
 | `Vad::from_memory(model)` / `from_file(path)` | Custom model bytes/path with bundled CMVN |
 | `Vad::from_memory_with_cmvn` / `Vad::from_file_with_cmvn` | Fully-custom model + CMVN |
 | `Vad::from_ort_session(session, cmvn, opts)` | Wrap an externally-built `ort::Session` |
-| `push_samples(&[f32])` | Feed PCM, queue events |
-| `poll_event() -> Option<VadEvent>` | Pull the next queued event |
-| `drain_events(F)` | Closure-based drain over `poll_event` |
-| `finish()` | Mark end-of-stream; closes any open segment |
+| `push_samples(&[f32])` | Feed PCM, returns the next available closed segment (or None) |
+| `finish()` | Mark end-of-stream; returns the trailing segment if one was open |
 | `reset()` | Wipe all per-stream state |
+| `pending_segments()` | Number of buffered segments awaiting drain via `push_samples(&[])` |
 
-Events are `VadEvent::Frame(FrameResult)` (per 10 ms frame, with `raw_prob`, `smoothed_prob`, and boundary flags) and `VadEvent::SegmentClosed(SpeechSegment)` (one per closed continuous speech run).
+## Music vs singing
+
+The bundled FireRedVAD streaming model is trained for **voice activity** as a binary classifier: vocal sources score high regardless of whether they're speech or singing, while pure instrumental music scores low. In practice this means singing is treated as a positive segment (emitted), pure music is rejected (no segment), and speech behaves as expected. The dedicated 3-class AED model (which separates speech / singing / music explicitly) is non-streaming upstream and is not part of this crate; it would be a separate concern.
 
 ## Tuning
 
