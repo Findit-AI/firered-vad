@@ -96,6 +96,17 @@ unexpected_cfgs = { level = "warn", check-cfg = [
   # would otherwise always pick NEON. Mirrors colconv's
   # `colconv_force_scalar` knob.
   "cfg(firered_vad_force_scalar)",
+  # Disable AVX-512 dispatch even when the host advertises `avx512f`.
+  # Set via `RUSTFLAGS='--cfg firered_vad_disable_avx512'` to force the
+  # AVX2 path for benchmarking or to work around buggy AVX-512 on
+  # specific microarchitectures.
+  "cfg(firered_vad_disable_avx512)",
+  # Disable AVX2 dispatch (and by extension AVX-512, since AVX-512
+  # implies AVX2 is also available). Set via
+  # `RUSTFLAGS='--cfg firered_vad_disable_avx2'` to force the SSE4.1
+  # path. Disabling AVX2 alone (without `firered_vad_disable_avx512`)
+  # leaves AVX-512 enabled; both flags together give the SSE4.1 path.
+  "cfg(firered_vad_disable_avx2)",
 ] }
 
 [package.metadata.docs.rs]

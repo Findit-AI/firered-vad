@@ -1,14 +1,15 @@
-//! Per-kernel microbench: compares scalar vs NEON for each Mel-fbank
-//! inner-loop kernel on aarch64. Lets us read the SIMD speedup
-//! directly from adjacent lines in the criterion report instead of
-//! running `cargo bench` twice with different `RUSTFLAGS`.
+//! Per-kernel microbench: compares scalar vs SIMD for each Mel-fbank
+//! inner-loop kernel. Lets us read the SIMD speedup directly from
+//! adjacent lines in the criterion report instead of running
+//! `cargo bench` twice with different `RUSTFLAGS`.
 //!
 //! Build / run:
 //!     cargo bench --bench kernels --features _bench-internals
 //!
 //! On aarch64 every `BenchmarkId::new("scalar", N)` line gets a
-//! matching `BenchmarkId::new("neon", N)` line. On other architectures
-//! only the scalar lines run.
+//! matching `BenchmarkId::new("neon", N)` line. On x86_64, additional
+//! `sse4.1`, `avx2`, and `avx512f` lines appear for whichever
+//! features the host CPU advertises.
 
 #![allow(missing_docs)]
 
@@ -20,6 +21,8 @@ use firered_vad::__bench_internals::{
 };
 #[cfg(target_arch = "aarch64")]
 use firered_vad::__bench_internals::neon;
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+use firered_vad::__bench_internals::{x86_avx2, x86_avx512, x86_sse41};
 
 /// Deterministic LCG fill so we don't measure cache-friendly uniform data.
 fn fill_pseudo_random(buf: &mut [f32], seed: u32) {
@@ -70,6 +73,24 @@ fn bench_dc_remove(c: &mut Criterion) {
   group.bench_function(BenchmarkId::new("neon", FRAME_LENGTH_SAMPLES), |b| {
     b.iter(|| unsafe { neon::dc_remove(black_box(&window), black_box(&mut out)) });
   });
+  #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+  {
+    if std::arch::is_x86_feature_detected!("sse4.1") {
+      group.bench_function(BenchmarkId::new("sse4.1", FRAME_LENGTH_SAMPLES), |b| {
+        b.iter(|| unsafe { x86_sse41::dc_remove(black_box(&window), black_box(&mut out)) });
+      });
+    }
+    if std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma") {
+      group.bench_function(BenchmarkId::new("avx2", FRAME_LENGTH_SAMPLES), |b| {
+        b.iter(|| unsafe { x86_avx2::dc_remove(black_box(&window), black_box(&mut out)) });
+      });
+    }
+    if std::arch::is_x86_feature_detected!("avx512f") {
+      group.bench_function(BenchmarkId::new("avx512f", FRAME_LENGTH_SAMPLES), |b| {
+        b.iter(|| unsafe { x86_avx512::dc_remove(black_box(&window), black_box(&mut out)) });
+      });
+    }
+  }
   group.finish();
 }
 
@@ -126,6 +147,42 @@ fn bench_window_apply(c: &mut Criterion) {
       criterion::BatchSize::SmallInput,
     );
   });
+  #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+  {
+    if std::arch::is_x86_feature_detected!("sse4.1") {
+      group.bench_function(BenchmarkId::new("sse4.1", FRAME_LENGTH_SAMPLES), |b| {
+        b.iter_batched(
+          || baseline.clone(),
+          |mut samples| unsafe {
+            x86_sse41::window_apply(black_box(&mut samples), black_box(&window))
+          },
+          criterion::BatchSize::SmallInput,
+        );
+      });
+    }
+    if std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma") {
+      group.bench_function(BenchmarkId::new("avx2", FRAME_LENGTH_SAMPLES), |b| {
+        b.iter_batched(
+          || baseline.clone(),
+          |mut samples| unsafe {
+            x86_avx2::window_apply(black_box(&mut samples), black_box(&window))
+          },
+          criterion::BatchSize::SmallInput,
+        );
+      });
+    }
+    if std::arch::is_x86_feature_detected!("avx512f") {
+      group.bench_function(BenchmarkId::new("avx512f", FRAME_LENGTH_SAMPLES), |b| {
+        b.iter_batched(
+          || baseline.clone(),
+          |mut samples| unsafe {
+            x86_avx512::window_apply(black_box(&mut samples), black_box(&window))
+          },
+          criterion::BatchSize::SmallInput,
+        );
+      });
+    }
+  }
   group.finish();
 }
 
@@ -150,6 +207,26 @@ fn bench_power_spectrum(c: &mut Criterion) {
   group.bench_function(BenchmarkId::new("neon", FFT_BINS), |b| {
     b.iter(|| unsafe { neon::power_spectrum(black_box(&complex), black_box(&mut out)) });
   });
+  #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+  {
+    if std::arch::is_x86_feature_detected!("sse4.1") {
+      group.bench_function(BenchmarkId::new("sse4.1", FFT_BINS), |b| {
+        b.iter(|| unsafe { x86_sse41::power_spectrum(black_box(&complex), black_box(&mut out)) });
+      });
+    }
+    if std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma") {
+      group.bench_function(BenchmarkId::new("avx2", FFT_BINS), |b| {
+        b.iter(|| unsafe { x86_avx2::power_spectrum(black_box(&complex), black_box(&mut out)) });
+      });
+    }
+    if std::arch::is_x86_feature_detected!("avx512f") {
+      group.bench_function(BenchmarkId::new("avx512f", FFT_BINS), |b| {
+        b.iter(|| unsafe {
+          x86_avx512::power_spectrum(black_box(&complex), black_box(&mut out))
+        });
+      });
+    }
+  }
   group.finish();
 }
 
@@ -186,6 +263,42 @@ fn bench_cmvn_apply(c: &mut Criterion) {
       criterion::BatchSize::SmallInput,
     );
   });
+  #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+  {
+    if std::arch::is_x86_feature_detected!("sse4.1") {
+      group.bench_function(BenchmarkId::new("sse4.1", NUM_MEL_BINS), |b| {
+        b.iter_batched(
+          || baseline.clone(),
+          |mut feature| unsafe {
+            x86_sse41::cmvn_apply(black_box(&mut feature), black_box(&means), black_box(&istd))
+          },
+          criterion::BatchSize::SmallInput,
+        );
+      });
+    }
+    if std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma") {
+      group.bench_function(BenchmarkId::new("avx2", NUM_MEL_BINS), |b| {
+        b.iter_batched(
+          || baseline.clone(),
+          |mut feature| unsafe {
+            x86_avx2::cmvn_apply(black_box(&mut feature), black_box(&means), black_box(&istd))
+          },
+          criterion::BatchSize::SmallInput,
+        );
+      });
+    }
+    if std::arch::is_x86_feature_detected!("avx512f") {
+      group.bench_function(BenchmarkId::new("avx512f", NUM_MEL_BINS), |b| {
+        b.iter_batched(
+          || baseline.clone(),
+          |mut feature| unsafe {
+            x86_avx512::cmvn_apply(black_box(&mut feature), black_box(&means), black_box(&istd))
+          },
+          criterion::BatchSize::SmallInput,
+        );
+      });
+    }
+  }
   group.finish();
 }
 
@@ -217,6 +330,31 @@ fn bench_mel_dot_log(c: &mut Criterion) {
     group.bench_function(BenchmarkId::new("neon", w), |b| {
       b.iter(|| unsafe { neon::mel_dot_log(black_box(&power_slice), black_box(&weights)) });
     });
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    {
+      if std::arch::is_x86_feature_detected!("sse4.1") {
+        group.bench_function(BenchmarkId::new("sse4.1", w), |b| {
+          b.iter(|| unsafe {
+            x86_sse41::mel_dot_log(black_box(&power_slice), black_box(&weights))
+          });
+        });
+      }
+      if std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma")
+      {
+        group.bench_function(BenchmarkId::new("avx2", w), |b| {
+          b.iter(|| unsafe {
+            x86_avx2::mel_dot_log(black_box(&power_slice), black_box(&weights))
+          });
+        });
+      }
+      if std::arch::is_x86_feature_detected!("avx512f") {
+        group.bench_function(BenchmarkId::new("avx512f", w), |b| {
+          b.iter(|| unsafe {
+            x86_avx512::mel_dot_log(black_box(&power_slice), black_box(&weights))
+          });
+        });
+      }
+    }
   }
   group.finish();
 }

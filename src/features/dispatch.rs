@@ -16,7 +16,7 @@
 // The crate-wide `deny(unsafe_code)` in `lib.rs` is opted out of here.
 #![allow(unsafe_code)]
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", target_arch = "x86", target_arch = "x86_64"))]
 use super::arch;
 use super::scalar;
 
@@ -35,6 +35,42 @@ pub(super) fn neon_available() -> bool {
     return false;
   }
   std::arch::is_aarch64_feature_detected!("neon")
+}
+
+/// AVX-512F availability on x86_64. Honors `firered_vad_force_scalar`
+/// (off entirely) and `firered_vad_disable_avx512` (skip AVX-512, fall
+/// through to AVX2 / SSE4.1).
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[cfg_attr(not(tarpaulin), inline(always))]
+pub(super) fn avx512_available() -> bool {
+  if cfg!(firered_vad_force_scalar) || cfg!(firered_vad_disable_avx512) {
+    return false;
+  }
+  std::arch::is_x86_feature_detected!("avx512f")
+}
+
+/// AVX2 + FMA availability on x86_64. Honors `firered_vad_force_scalar`
+/// and `firered_vad_disable_avx2`. FMA on its own is essentially
+/// universal on AVX2-capable CPUs, but we still verify both feature
+/// bits to keep the `target_feature(enable = "avx2,fma")` contract
+/// honest.
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[cfg_attr(not(tarpaulin), inline(always))]
+pub(super) fn avx2_available() -> bool {
+  if cfg!(firered_vad_force_scalar) || cfg!(firered_vad_disable_avx2) {
+    return false;
+  }
+  std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma")
+}
+
+/// SSE4.1 availability on x86_64. Honors `firered_vad_force_scalar`.
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[cfg_attr(not(tarpaulin), inline(always))]
+pub(super) fn sse41_available() -> bool {
+  if cfg!(firered_vad_force_scalar) {
+    return false;
+  }
+  std::arch::is_x86_feature_detected!("sse4.1")
 }
 
 // ---- dispatchers ----
@@ -60,6 +96,21 @@ pub(super) fn dc_remove(window: &[f32], out: &mut [f32]) {
       return;
     }
   }
+  #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+  {
+    if avx512_available() {
+      unsafe { arch::x86_avx512::dc_remove(window, out) };
+      return;
+    }
+    if avx2_available() {
+      unsafe { arch::x86_avx2::dc_remove(window, out) };
+      return;
+    }
+    if sse41_available() {
+      unsafe { arch::x86_sse41::dc_remove(window, out) };
+      return;
+    }
+  }
   scalar::dc_remove(window, out);
 }
 
@@ -80,6 +131,21 @@ pub(super) fn window_apply(samples: &mut [f32], window: &[f32]) {
       return;
     }
   }
+  #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+  {
+    if avx512_available() {
+      unsafe { arch::x86_avx512::window_apply(samples, window) };
+      return;
+    }
+    if avx2_available() {
+      unsafe { arch::x86_avx2::window_apply(samples, window) };
+      return;
+    }
+    if sse41_available() {
+      unsafe { arch::x86_sse41::window_apply(samples, window) };
+      return;
+    }
+  }
   scalar::window_apply(samples, window);
 }
 
@@ -90,6 +156,21 @@ pub(super) fn power_spectrum(complex: &[rustfft::num_complex::Complex<f32>], out
   {
     if neon_available() {
       unsafe { arch::neon::power_spectrum(complex, out) };
+      return;
+    }
+  }
+  #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+  {
+    if avx512_available() {
+      unsafe { arch::x86_avx512::power_spectrum(complex, out) };
+      return;
+    }
+    if avx2_available() {
+      unsafe { arch::x86_avx2::power_spectrum(complex, out) };
+      return;
+    }
+    if sse41_available() {
+      unsafe { arch::x86_sse41::power_spectrum(complex, out) };
       return;
     }
   }
@@ -106,6 +187,21 @@ pub(super) fn cmvn_apply(feature: &mut [f32], means: &[f32], istd: &[f32]) {
       return;
     }
   }
+  #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+  {
+    if avx512_available() {
+      unsafe { arch::x86_avx512::cmvn_apply(feature, means, istd) };
+      return;
+    }
+    if avx2_available() {
+      unsafe { arch::x86_avx2::cmvn_apply(feature, means, istd) };
+      return;
+    }
+    if sse41_available() {
+      unsafe { arch::x86_sse41::cmvn_apply(feature, means, istd) };
+      return;
+    }
+  }
   scalar::cmvn_apply(feature, means, istd);
 }
 
@@ -117,6 +213,18 @@ pub(super) fn mel_dot_log(power_slice: &[f32], weights: &[f32]) -> f32 {
   {
     if neon_available() {
       return unsafe { arch::neon::mel_dot_log(power_slice, weights) };
+    }
+  }
+  #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+  {
+    if avx512_available() {
+      return unsafe { arch::x86_avx512::mel_dot_log(power_slice, weights) };
+    }
+    if avx2_available() {
+      return unsafe { arch::x86_avx2::mel_dot_log(power_slice, weights) };
+    }
+    if sse41_available() {
+      return unsafe { arch::x86_sse41::mel_dot_log(power_slice, weights) };
     }
   }
   scalar::mel_dot_log(power_slice, weights)

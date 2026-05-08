@@ -123,6 +123,111 @@ pub mod __bench_internals {
       unsafe { inner::mel_dot_log(power_slice, weights) }
     }
   }
+
+  /// x86_64 SSE4.1 kernel thunks.
+  ///
+  /// # Safety
+  /// Caller must ensure SSE4.1 is available on the host
+  /// (`is_x86_feature_detected!("sse4.1")`).
+  #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+  #[allow(unsafe_code)]
+  pub mod x86_sse41 {
+    use super::super::arch::x86_sse41 as inner;
+
+    #[inline]
+    pub unsafe fn dc_remove(window: &[f32], out: &mut [f32]) {
+      unsafe { inner::dc_remove(window, out) }
+    }
+    #[inline]
+    pub unsafe fn window_apply(samples: &mut [f32], window: &[f32]) {
+      unsafe { inner::window_apply(samples, window) }
+    }
+    #[inline]
+    pub unsafe fn power_spectrum(
+      complex: &[rustfft::num_complex::Complex<f32>],
+      out: &mut [f32],
+    ) {
+      unsafe { inner::power_spectrum(complex, out) }
+    }
+    #[inline]
+    pub unsafe fn cmvn_apply(feature: &mut [f32], means: &[f32], istd: &[f32]) {
+      unsafe { inner::cmvn_apply(feature, means, istd) }
+    }
+    #[inline]
+    pub unsafe fn mel_dot_log(power_slice: &[f32], weights: &[f32]) -> f32 {
+      unsafe { inner::mel_dot_log(power_slice, weights) }
+    }
+  }
+
+  /// x86_64 AVX2 + FMA kernel thunks.
+  ///
+  /// # Safety
+  /// Caller must ensure AVX2 + FMA are available on the host
+  /// (`is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma")`).
+  #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+  #[allow(unsafe_code)]
+  pub mod x86_avx2 {
+    use super::super::arch::x86_avx2 as inner;
+
+    #[inline]
+    pub unsafe fn dc_remove(window: &[f32], out: &mut [f32]) {
+      unsafe { inner::dc_remove(window, out) }
+    }
+    #[inline]
+    pub unsafe fn window_apply(samples: &mut [f32], window: &[f32]) {
+      unsafe { inner::window_apply(samples, window) }
+    }
+    #[inline]
+    pub unsafe fn power_spectrum(
+      complex: &[rustfft::num_complex::Complex<f32>],
+      out: &mut [f32],
+    ) {
+      unsafe { inner::power_spectrum(complex, out) }
+    }
+    #[inline]
+    pub unsafe fn cmvn_apply(feature: &mut [f32], means: &[f32], istd: &[f32]) {
+      unsafe { inner::cmvn_apply(feature, means, istd) }
+    }
+    #[inline]
+    pub unsafe fn mel_dot_log(power_slice: &[f32], weights: &[f32]) -> f32 {
+      unsafe { inner::mel_dot_log(power_slice, weights) }
+    }
+  }
+
+  /// x86_64 AVX-512F kernel thunks.
+  ///
+  /// # Safety
+  /// Caller must ensure AVX-512F is available on the host
+  /// (`is_x86_feature_detected!("avx512f")`).
+  #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+  #[allow(unsafe_code)]
+  pub mod x86_avx512 {
+    use super::super::arch::x86_avx512 as inner;
+
+    #[inline]
+    pub unsafe fn dc_remove(window: &[f32], out: &mut [f32]) {
+      unsafe { inner::dc_remove(window, out) }
+    }
+    #[inline]
+    pub unsafe fn window_apply(samples: &mut [f32], window: &[f32]) {
+      unsafe { inner::window_apply(samples, window) }
+    }
+    #[inline]
+    pub unsafe fn power_spectrum(
+      complex: &[rustfft::num_complex::Complex<f32>],
+      out: &mut [f32],
+    ) {
+      unsafe { inner::power_spectrum(complex, out) }
+    }
+    #[inline]
+    pub unsafe fn cmvn_apply(feature: &mut [f32], means: &[f32], istd: &[f32]) {
+      unsafe { inner::cmvn_apply(feature, means, istd) }
+    }
+    #[inline]
+    pub unsafe fn mel_dot_log(power_slice: &[f32], weights: &[f32]) -> f32 {
+      unsafe { inner::mel_dot_log(power_slice, weights) }
+    }
+  }
 }
 
 use crate::error::{Error, Result};
