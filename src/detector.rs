@@ -202,18 +202,18 @@ impl Postprocessor {
         self.speech_cnt += 1;
         if is_speech {
           self.silence_cnt = 0;
-          if let Some(max) = max_speech {
-            if self.speech_cnt >= max {
-              // Force-split: mark this frame as a segment end and re-arm.
-              self.hit_max_speech = true;
-              self.speech_cnt = 0;
-              is_speech_end = true;
-              let close = self.frame_cnt_1based.saturating_sub(1);
-              end_frame = Some(close);
-              start_frame = self.last_speech_start_frame;
-              self.last_speech_end_frame = Some(close);
-              self.last_speech_start_frame = None;
-            }
+          if let Some(max) = max_speech
+            && self.speech_cnt >= max
+          {
+            // Force-split: mark this frame as a segment end and re-arm.
+            self.hit_max_speech = true;
+            self.speech_cnt = 0;
+            is_speech_end = true;
+            let close = self.frame_cnt_1based.saturating_sub(1);
+            end_frame = Some(close);
+            start_frame = self.last_speech_start_frame;
+            self.last_speech_end_frame = Some(close);
+            self.last_speech_start_frame = None;
           }
         } else {
           self.state = VadState::PossibleSilence;
@@ -225,17 +225,17 @@ impl Postprocessor {
         if is_speech {
           self.state = VadState::Speech;
           self.silence_cnt = 0;
-          if let Some(max) = max_speech {
-            if self.speech_cnt >= max {
-              self.hit_max_speech = true;
-              self.speech_cnt = 0;
-              is_speech_end = true;
-              let close = self.frame_cnt_1based.saturating_sub(1);
-              end_frame = Some(close);
-              start_frame = self.last_speech_start_frame;
-              self.last_speech_end_frame = Some(close);
-              self.last_speech_start_frame = None;
-            }
+          if let Some(max) = max_speech
+            && self.speech_cnt >= max
+          {
+            self.hit_max_speech = true;
+            self.speech_cnt = 0;
+            is_speech_end = true;
+            let close = self.frame_cnt_1based.saturating_sub(1);
+            end_frame = Some(close);
+            start_frame = self.last_speech_start_frame;
+            self.last_speech_end_frame = Some(close);
+            self.last_speech_start_frame = None;
           }
         } else {
           self.silence_cnt += 1;
