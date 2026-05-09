@@ -17,6 +17,7 @@ Streaming Voice Activity Detection that wraps the [FireRedVAD](https://github.co
 
 </div>
 
+## Introduction
 
 Streaming Voice Activity Detection that wraps the [FireRedVAD](https://github.com/FireRedTeam/FireRedVAD) ONNX model. Bit-for-bit parity with upstream Python's `FireRedStreamVad`, with a Sans-I/O Rust API designed for piping continuous human-speech windows into Whisper or any other downstream consumer.
 
