@@ -8,7 +8,7 @@ description = "Streaming Voice Activity Detection wrapping the FireRedVAD model 
 repository = "https://github.com/uqio/firered-vad"
 documentation = "https://docs.rs/firered-vad"
 readme = "README.md"
-keywords = ["vad", "voice-activity-detection", "fireredvad", "speech", "audio"]
+keywords = ["vad", "silero", "fireredvad", "speech", "audio"]
 categories = ["multimedia::audio", "science"]
 
 [features]
